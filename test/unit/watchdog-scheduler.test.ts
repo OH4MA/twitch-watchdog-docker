@@ -66,6 +66,20 @@ describe('DefaultWatchdogScheduler', () => {
         { channel: 'second' },
       ],
     ]);
+    expect(harness.onStreamStatusChanged.mock.calls).toEqual([
+      [{ channel: 'first', isLive: true }],
+      [{ channel: 'first', isLive: false }],
+      [{ channel: 'second', isLive: true }],
+    ]);
+    expect(harness.scheduler.getSnapshot()).toEqual({
+      running: false,
+      checkInFlight: false,
+      lastCheckedAt: CHECKED_AT,
+      channels: [
+        { channel: 'first', isLive: false },
+        { channel: 'second', isLive: true },
+      ],
+    });
   });
 
   it('第一輪全部 offline 不輸出狀態噪音但仍 reconcile 空集合', async () => {
@@ -387,6 +401,9 @@ interface HarnessOptions {
   readonly maxConcurrentStreams?: number;
   readonly timer?: SchedulerTimer;
   readonly now?: () => Date;
+  readonly onStreamStatusChanged?: (
+    change: { channel: string; isLive: boolean },
+  ) => void | Promise<void>;
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -408,6 +425,9 @@ function createHarness(options: HarnessOptions = {}) {
     (input) => selectActiveChannels(input),
   );
   const logger = createLoggerMock();
+  const onStreamStatusChanged = vi.fn(
+    options.onStreamStatusChanged ?? (() => undefined),
+  );
   const scheduler = new DefaultWatchdogScheduler({
     config: {
       channels: options.channels ?? ['live'],
@@ -428,7 +448,8 @@ function createHarness(options: HarnessOptions = {}) {
     ...(options.timer === undefined
       ? {}
       : { timer: options.timer }),
-    ...(options.now === undefined ? {} : { now: options.now }),
+    now: options.now ?? (() => new Date(CHECKED_AT)),
+    onStreamStatusChanged,
   });
 
   return {
@@ -437,6 +458,7 @@ function createHarness(options: HarnessOptions = {}) {
     reconcile,
     scheduler,
     selectActiveChannels: select,
+    onStreamStatusChanged,
   };
 }
 

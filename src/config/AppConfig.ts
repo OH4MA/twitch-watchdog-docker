@@ -14,6 +14,13 @@ export interface BrowserConfig {
   readonly restartOnCrash: boolean;
 }
 
+export interface TelegramConfig {
+  readonly enabled: boolean;
+  readonly botToken: string;
+  readonly allowedChatIds: readonly string[];
+  readonly pollingTimeoutSeconds: number;
+}
+
 export interface AppConfig {
   readonly channels: readonly string[];
   readonly checkIntervalSeconds: number;
@@ -23,4 +30,5 @@ export interface AppConfig {
   readonly logLevel: LogLevel;
   readonly twitchApi: TwitchApiConfig;
   readonly browser: BrowserConfig;
+  readonly telegram: TelegramConfig;
 }

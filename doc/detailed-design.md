@@ -26,13 +26,14 @@
 7. 記錄服務狀態、頻道狀態變更、掛台開始/停止、領點結果與錯誤。
 8. 提供 Dockerfile、docker-compose.yml、config.example.yml 與登入狀態匯入說明。
 9. 提供 mock Twitch 頁面與測試架構。
+10. 可選擇透過 Telegram Bot 接收狀態通知與執行受限管理指令。
 
 ### 2.2 初版不包含
 
 1. 自動輸入 Twitch 帳號密碼登入。
 2. 多帳號管理。
 3. Web UI。
-4. Discord、Telegram、Email 等通知系統。
+4. Discord、Email 等其他通知系統。
 5. 反偵測、繞過驗證、規避平台限制、批量帳號或大量觀看數用途。
 6. 跨節點分散式掛台。
 
@@ -992,15 +993,7 @@ README 或使用文件需包含：
 
 ### 14.2 通知系統
 
-可在未來加入 `Notifier` 介面：
-
-```ts
-interface Notifier {
-  notify(event: WatchdogEvent): Promise<void>;
-}
-```
-
-初版不實作。
+目前提供可選的 Telegram Bot 長輪詢整合，支援服務、直播狀態與領點通知，以及狀態查詢、立即檢查、暫停與恢復。未來可將同一事件契約擴充至 Discord 或 Email。
 
 ### 14.3 健康檢查端點
 

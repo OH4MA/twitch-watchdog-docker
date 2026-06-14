@@ -39,6 +39,7 @@ export {
   REWARD_CLAIM_COOLDOWN_MS,
   RewardClaimer,
   type RewardClaimResult,
+  type RewardClaimObserver,
   type RewardClaimerClock,
   type RewardClaimerLogger,
   type RewardClaimerOptions,

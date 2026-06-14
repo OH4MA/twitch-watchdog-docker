@@ -5,6 +5,7 @@ import {
   type AppConfig,
   type BrowserConfig,
   type LogLevel,
+  type TelegramConfig,
   type TwitchApiConfig,
 } from './AppConfig.js';
 import {
@@ -22,10 +23,12 @@ const DEFAULT_STORAGE_STATE_PATH =
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 const DEFAULT_PAGE_HEALTH_CHECK_INTERVAL_SECONDS = 30;
 const DEFAULT_REWARD_CHECK_INTERVAL_SECONDS = 15;
+const DEFAULT_TELEGRAM_POLLING_TIMEOUT_SECONDS = 25;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_TIMER_DELAY_SECONDS = Math.floor(MAX_TIMER_DELAY_MS / 1_000);
 const CHANNEL_PATTERN = /^[A-Za-z0-9_]{1,25}$/u;
 const ENV_REFERENCE_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/gu;
+const TELEGRAM_CHAT_ID_PATTERN = /^-?\d+$/u;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -115,9 +118,109 @@ function buildConfig(
     logLevel: resolveLogLevel(env.LOG_LEVEL, root.log_level),
     twitchApi: buildTwitchApi(root.twitch_api, env),
     browser: buildBrowserConfig(root.browser),
+    telegram: buildTelegramConfig(root.telegram, env),
   };
 
   return config;
+}
+
+function buildTelegramConfig(
+  value: unknown,
+  env: NodeJS.ProcessEnv,
+): TelegramConfig {
+  const telegram = value === undefined
+    ? {}
+    : requireRecord(value, 'telegram');
+  const enabled = resolveBooleanOverride(
+    env.TELEGRAM_ENABLED,
+    telegram.enabled,
+    'telegram.enabled',
+    false,
+  );
+  const botToken = resolveOptionalStringOverride(
+    env.TELEGRAM_BOT_TOKEN,
+    telegram.bot_token,
+    'telegram.bot_token',
+  );
+  const allowedChatIds = resolveTelegramChatIds(
+    env.TELEGRAM_ALLOWED_CHAT_IDS,
+    telegram.allowed_chat_ids,
+  );
+
+  if (enabled && botToken === '') {
+    throw new ConfigValidationError(
+      'telegram.bot_token',
+      '啟用 Telegram 時必須是非空字串',
+    );
+  }
+  if (enabled && allowedChatIds.length === 0) {
+    throw new ConfigValidationError(
+      'telegram.allowed_chat_ids',
+      '啟用 Telegram 時至少需要一個 chat ID',
+    );
+  }
+
+  return {
+    enabled,
+    botToken,
+    allowedChatIds,
+    pollingTimeoutSeconds: optionalIntegerAtLeast(
+      telegram.polling_timeout_seconds,
+      'telegram.polling_timeout_seconds',
+      DEFAULT_TELEGRAM_POLLING_TIMEOUT_SECONDS,
+      1,
+      50,
+    ),
+  };
+}
+
+function resolveOptionalStringOverride(
+  environmentValue: string | undefined,
+  configValue: unknown,
+  field: string,
+): string {
+  const value = environmentValue ?? configValue;
+  if (value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string' && value.trim() === '') {
+    return '';
+  }
+  return requireNonEmptyString(value, field);
+}
+
+function resolveTelegramChatIds(
+  environmentValue: string | undefined,
+  configValue: unknown,
+): readonly string[] {
+  const values = environmentValue === undefined
+    ? configValue
+    : environmentValue.trim() === ''
+      ? []
+      : environmentValue.split(',').map((item) => item.trim());
+
+  if (values === undefined) {
+    return [];
+  }
+  if (!Array.isArray(values)) {
+    throw new ConfigValidationError(
+      'telegram.allowed_chat_ids',
+      '必須是 chat ID 字串陣列',
+    );
+  }
+
+  return [...new Set(values.map((value, index) => {
+    if (
+      typeof value !== 'string' ||
+      !TELEGRAM_CHAT_ID_PATTERN.test(value)
+    ) {
+      throw new ConfigValidationError(
+        `telegram.allowed_chat_ids[${index}]`,
+        '必須是整數格式的 chat ID 字串',
+      );
+    }
+    return value;
+  }))];
 }
 
 function buildTwitchApi(
@@ -355,6 +458,7 @@ export type {
   AppConfig,
   BrowserConfig,
   LogLevel,
+  TelegramConfig,
   TwitchApiConfig,
 } from './AppConfig.js';
 export {

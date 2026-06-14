@@ -98,10 +98,12 @@ function createLogger(): {
 describe('RewardClaimer', () => {
   it('使用 primary selector 點擊可領取按鈕', async () => {
     const click = vi.fn(async () => undefined);
+    const onResult = vi.fn();
     const { info, logger } = createLogger();
     const claimer = new RewardClaimer({
       logger,
       clock: () => START_TIME,
+      onResult,
     });
 
     const result = await claimer.claimIfAvailable(
@@ -119,6 +121,7 @@ describe('RewardClaimer', () => {
       channel: 'streamer_one',
       claimedAt: START_TIME.toISOString(),
     });
+    expect(onResult).toHaveBeenCalledWith(result);
   });
 
   it('primary selector 不存在時使用 summary 結構 fallback', async () => {
@@ -216,9 +219,11 @@ describe('RewardClaimer', () => {
       );
     });
     const { logger, warn } = createLogger();
+    const onResult = vi.fn();
     const claimer = new RewardClaimer({
       logger,
       clock: () => START_TIME,
+      onResult,
     });
 
     const result = await claimer.claimIfAvailable(
@@ -240,6 +245,7 @@ describe('RewardClaimer', () => {
         error: result.error,
       }),
     );
+    expect(onResult).toHaveBeenCalledWith(result);
   });
 
   it('selector API 拋錯時不向外拋出', async () => {

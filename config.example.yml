@@ -17,3 +17,7 @@ browser:
   page_health_check_interval_seconds: 30
   reward_check_interval_seconds: 15
   restart_on_crash: true
+
+telegram:
+  enabled: false
+  polling_timeout_seconds: 25

@@ -183,11 +183,11 @@ services:
 - 多帳號管理。
 - 繞過驗證或反偵測機制。
 - Web UI 管理介面。
-- 通知系統，例如 Discord、Telegram、Email。
+- Discord、Email 等其他通知系統。
 
 ## 7. 後續可擴充功能
 
-- 加入 Discord 或 Telegram 通知。
+- 擴充 Discord 或 Email 通知。
 - 加入簡易 Web UI 顯示目前掛台狀態。
 - 支援更細緻的頻道優先序與排程規則。
 - 支援健康檢查端點，例如 `/healthz`。

@@ -16,10 +16,16 @@ export interface AppRunner {
   stop(reason: string): Promise<void>;
 }
 
+export interface ApplicationIntegration {
+  start(): Promise<void>;
+  stop(reason: string): Promise<void>;
+}
+
 export interface ApplicationRuntime {
   readonly browserManager: BrowserManager;
   readonly sessionManager: SessionManager;
   readonly scheduler: WatchdogScheduler;
+  readonly integrations?: readonly ApplicationIntegration[];
 }
 
 export type RuntimeFactory = (
@@ -45,6 +51,7 @@ type StartupPhase =
   | 'credential'
   | 'runtime'
   | 'browser'
+  | 'integration'
   | 'scheduler';
 
 export class DefaultAppRunner implements AppRunner {
@@ -122,6 +129,11 @@ export class DefaultAppRunner implements AppRunner {
       phase = 'browser';
       await runtime.browserManager.start();
 
+      phase = 'integration';
+      for (const integration of runtime.integrations ?? []) {
+        await integration.start();
+      }
+
       phase = 'scheduler';
       await runtime.scheduler.start();
 
@@ -182,6 +194,14 @@ export class DefaultAppRunner implements AppRunner {
         () => runtime.browserManager.stop(),
         this.config,
       );
+      for (const integration of [...(runtime.integrations ?? [])].reverse()) {
+        await cleanupStep(
+          logger,
+          'integration',
+          () => integration.stop(reason),
+          this.config,
+        );
+      }
     }
 
     safeLog(logger, 'info', LOG_EVENTS.SERVICE_STOPPED, { reason });
@@ -243,6 +263,7 @@ export function safeErrorMessage(
     config.twitchApi.accessToken,
     config.twitchApi.clientId,
     config.storageStatePath,
+    config.telegram.botToken,
   ]) {
     if (sensitiveValue.length > 0) {
       safeMessage = safeMessage.replaceAll(sensitiveValue, '[REDACTED]');

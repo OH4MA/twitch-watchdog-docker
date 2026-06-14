@@ -48,6 +48,12 @@ describe('YamlConfigLoader', () => {
         rewardCheckIntervalSeconds: 20,
         restartOnCrash: false,
       },
+      telegram: {
+        enabled: false,
+        botToken: '',
+        allowedChatIds: [],
+        pollingTimeoutSeconds: 25,
+      },
     });
   });
 
@@ -86,6 +92,12 @@ twitch_api:
         pageHealthCheckIntervalSeconds: 30,
         rewardCheckIntervalSeconds: 15,
         restartOnCrash: true,
+      },
+      telegram: {
+        enabled: false,
+        botToken: '',
+        allowedChatIds: [],
+        pollingTimeoutSeconds: 25,
       },
     });
     expect(debug).toHaveBeenCalledWith('config_concurrency_clamped', {
@@ -169,6 +181,35 @@ twitch_api:
     await expect(
       loadFixture('valid.yml', { HEADLESS: 'yes' }),
     ).rejects.toThrow(/headless.*true.*false/u);
+  });
+
+  it('可由環境變數啟用 Telegram 並解析多個 chat ID', async () => {
+    const config = await loadFixture('defaults.yml', {
+      TELEGRAM_ENABLED: 'true',
+      TELEGRAM_BOT_TOKEN: '123456:test-token',
+      TELEGRAM_ALLOWED_CHAT_IDS: '42, -100123,42',
+    });
+
+    expect(config.telegram).toEqual({
+      enabled: true,
+      botToken: '123456:test-token',
+      allowedChatIds: ['42', '-100123'],
+      pollingTimeoutSeconds: 25,
+    });
+  });
+
+  it.each([
+    ['缺少 bot token', { TELEGRAM_ENABLED: 'true', TELEGRAM_ALLOWED_CHAT_IDS: '42' }],
+    ['缺少 chat ID', { TELEGRAM_ENABLED: 'true', TELEGRAM_BOT_TOKEN: 'token' }],
+    ['chat ID 格式錯誤', {
+      TELEGRAM_ENABLED: 'true',
+      TELEGRAM_BOT_TOKEN: 'token',
+      TELEGRAM_ALLOWED_CHAT_IDS: 'not-a-chat',
+    }],
+  ])('Telegram %s 時拒絕設定', async (_name, env) => {
+    await expect(loadFixture('defaults.yml', env)).rejects.toBeInstanceOf(
+      ConfigValidationError,
+    );
   });
 
   it.each([
@@ -358,6 +399,8 @@ twitch_api:
     expect(Object.isFrozen(config.channels)).toBe(true);
     expect(Object.isFrozen(config.twitchApi)).toBe(true);
     expect(Object.isFrozen(config.browser)).toBe(true);
+    expect(Object.isFrozen(config.telegram)).toBe(true);
+    expect(Object.isFrozen(config.telegram.allowedChatIds)).toBe(true);
     expect(() => {
       (config.channels as string[]).push('another_channel');
     }).toThrow(TypeError);

@@ -38,7 +38,12 @@ export type RewardClaimerClock =
 export interface RewardClaimerOptions {
   readonly logger?: RewardClaimerLogger;
   readonly clock?: RewardClaimerClock;
+  readonly onResult?: RewardClaimObserver;
 }
+
+export type RewardClaimObserver = (
+  result: RewardClaimResult,
+) => void | Promise<void>;
 
 export interface RewardClaimer {
   claimIfAvailable(page: Page, channel: string): Promise<RewardClaimResult>;
@@ -54,11 +59,13 @@ export const RewardClaimer = class RewardClaimerImplementation
 {
   private readonly logger: RewardClaimerLogger;
   private readonly now: () => Date;
+  private readonly onResult: RewardClaimObserver | undefined;
   private readonly lastClaimedAtByChannel = new Map<string, number>();
 
   public constructor(options: RewardClaimerOptions = {}) {
     this.logger = options.logger ?? NOOP_LOGGER;
     this.now = resolveClock(options.clock);
+    this.onResult = options.onResult;
   }
 
   public async claimIfAvailable(
@@ -108,11 +115,13 @@ export const RewardClaimer = class RewardClaimerImplementation
       claimedAt: claimedAtIso,
     });
 
-    return {
+    const result: RewardClaimResult = {
       status: 'claimed',
       channel,
       claimedAt: claimedAtIso,
     };
+    this.notifyResult(result);
+    return result;
   }
 
   private isCoolingDown(channel: string, checkedAt: number): boolean {
@@ -138,12 +147,28 @@ export const RewardClaimer = class RewardClaimerImplementation
       error: safeError,
     });
 
-    return {
+    const result: RewardClaimResult = {
       status: 'click_failed',
       channel,
       checkedAt,
       error: safeError,
     };
+    this.notifyResult(result);
+    return result;
+  }
+
+  private notifyResult(result: RewardClaimResult): void {
+    try {
+      void Promise.resolve(this.onResult?.(result)).catch(() => {
+        safeLog(this.logger, 'warn', 'reward_notification_failed', {
+          channel: result.channel,
+        });
+      });
+    } catch {
+      safeLog(this.logger, 'warn', 'reward_notification_failed', {
+        channel: result.channel,
+      });
+    }
   }
 };
 

@@ -50,6 +50,12 @@ const CONFIG: AppConfig = Object.freeze({
     rewardCheckIntervalSeconds: 15,
     restartOnCrash: true,
   }),
+  telegram: Object.freeze({
+    enabled: false,
+    botToken: '',
+    allowedChatIds: Object.freeze([]),
+    pollingTimeoutSeconds: 25,
+  }),
 });
 
 const CREDENTIAL_RESULT: CredentialValidationResult = Object.freeze({
@@ -240,6 +246,43 @@ describe('DefaultAppRunner', () => {
     ]);
   });
 
+  it('整合元件在 Browser 後、Scheduler 前啟動，並於 Browser 後停止', async () => {
+    const harness = createHarness();
+    const integration = {
+      start: vi.fn(async () => {
+        harness.lifecycleEvents.push('integration.start');
+      }),
+      stop: vi.fn(async (reason: string) => {
+        harness.lifecycleEvents.push(`integration.stop:${reason}`);
+      }),
+    };
+    harness.runtimeFactory.mockResolvedValue({
+      browserManager: harness.browserManager,
+      sessionManager: harness.sessionManager,
+      scheduler: harness.scheduler,
+      integrations: [integration],
+    });
+
+    await harness.app.start();
+    expect(harness.lifecycleEvents).toContain('integration.start');
+    expect(harness.lifecycleEvents.indexOf('browser.start')).toBeLessThan(
+      harness.lifecycleEvents.indexOf('integration.start'),
+    );
+    expect(harness.lifecycleEvents.indexOf('integration.start')).toBeLessThan(
+      harness.lifecycleEvents.indexOf('scheduler.start'),
+    );
+
+    harness.lifecycleEvents.length = 0;
+    await harness.app.stop('SIGTERM');
+    expect(harness.lifecycleEvents).toEqual([
+      'scheduler.stop',
+      'sessionManager.stopAll:SIGTERM',
+      'browser.stop',
+      'integration.stop:SIGTERM',
+      'configured.flush',
+    ]);
+  });
+
   it('並發及重複 stop 只釋放一次資源', async () => {
     const harness = createHarness();
     await harness.app.start();
@@ -409,6 +452,11 @@ function createScheduler(
       lifecycleEvents.push('scheduler.stop');
     }),
     runOnce: vi.fn(async () => undefined),
+    getSnapshot: vi.fn(() => ({
+      running: true,
+      checkInFlight: false,
+      channels: [],
+    })),
   };
 }
 

@@ -3,6 +3,7 @@ export {
   safeErrorMessage,
   type AppRunner,
   type ApplicationLoggerFactory,
+  type ApplicationIntegration,
   type ApplicationRuntime,
   type DefaultAppRunnerOptions,
   type RuntimeFactory,

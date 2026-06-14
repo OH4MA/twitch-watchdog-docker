@@ -3,5 +3,6 @@ export {
   type AppConfig,
   type BrowserConfig,
   type LogLevel,
+  type TelegramConfig,
   type TwitchApiConfig,
 } from './AppConfig.js';

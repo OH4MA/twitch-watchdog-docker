@@ -69,5 +69,5 @@
 - [x] 不實作自動輸入 Twitch 帳號密碼登入。
 - [x] 不實作多帳號管理。
 - [x] 不實作 Web UI。
-- [x] 不實作 Discord、Telegram、Email 通知。
+- [x] 不實作 Discord、Email 通知；Telegram 為後續新增的可選整合。
 - [x] 不實作反偵測、繞過驗證、規避平台限制、批量帳號或大量觀看數用途。

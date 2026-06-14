@@ -14,7 +14,30 @@ export interface WatchdogScheduler {
   start(): void;
   stop(): Promise<void>;
   runOnce(): Promise<void>;
+  getSnapshot(): WatchdogSchedulerSnapshot;
 }
+
+export interface WatchdogSchedulerSnapshot {
+  readonly running: boolean;
+  readonly checkInFlight: boolean;
+  readonly retryAt?: string;
+  readonly lastCheckedAt?: string;
+  readonly channels: readonly SchedulerChannelStatus[];
+}
+
+export interface SchedulerChannelStatus {
+  readonly channel: string;
+  readonly isLive?: boolean;
+}
+
+export interface StreamStatusChange {
+  readonly channel: string;
+  readonly isLive: boolean;
+}
+
+export type StreamStatusObserver = (
+  change: StreamStatusChange,
+) => void | Promise<void>;
 
 export interface SchedulerTimer {
   setInterval(callback: () => void, intervalMs: number): unknown;
@@ -34,6 +57,7 @@ export interface DefaultWatchdogSchedulerOptions {
   readonly logger: Logger;
   readonly timer?: SchedulerTimer;
   readonly now?: () => Date;
+  readonly onStreamStatusChanged?: StreamStatusObserver;
 }
 
 const NO_INTERVAL = Symbol('no interval');
@@ -54,6 +78,7 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
   private intervalHandle: unknown = NO_INTERVAL;
   private inFlight: Promise<void> | undefined;
   private retryAt: Date | undefined;
+  private lastCheckedAt: Date | undefined;
   private started = false;
 
   public constructor(
@@ -118,6 +143,25 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
     return trackedExecution;
   }
 
+  public getSnapshot(): WatchdogSchedulerSnapshot {
+    return {
+      running: this.started,
+      checkInFlight: this.inFlight !== undefined,
+      ...(this.retryAt === undefined
+        ? {}
+        : { retryAt: this.retryAt.toISOString() }),
+      ...(this.lastCheckedAt === undefined
+        ? {}
+        : { lastCheckedAt: this.lastCheckedAt.toISOString() }),
+      channels: this.options.config.channels.map((channel) => {
+        const isLive = this.previousLiveStatuses.get(
+          normalizeChannel(channel),
+        );
+        return isLive === undefined ? { channel } : { channel, isLive };
+      }),
+    };
+  }
+
   private triggerTick(): void {
     void this.runOnce().catch(() => {
       this.options.logger.error('scheduler_tick_failed', {
@@ -150,6 +194,7 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
 
     this.logStatusChanges(currentLiveStatuses);
     this.replacePreviousStatuses(currentLiveStatuses);
+    this.lastCheckedAt = this.now();
     this.retryAt = undefined;
 
     const activeChannels =
@@ -258,11 +303,29 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
         this.options.logger.info(LOG_EVENTS.STREAM_ONLINE, {
           channel,
         });
+        this.notifyStatusChange({ channel, isLive: true });
       } else if (isLive === false && wasLive === true) {
         this.options.logger.info(LOG_EVENTS.STREAM_OFFLINE, {
           channel,
         });
+        this.notifyStatusChange({ channel, isLive: false });
       }
+    }
+  }
+
+  private notifyStatusChange(change: StreamStatusChange): void {
+    try {
+      void Promise.resolve(
+        this.options.onStreamStatusChanged?.(change),
+      ).catch(() => {
+        this.options.logger.warn('stream_status_notification_failed', {
+          channel: change.channel,
+        });
+      });
+    } catch {
+      this.options.logger.warn('stream_status_notification_failed', {
+        channel: change.channel,
+      });
     }
   }
 

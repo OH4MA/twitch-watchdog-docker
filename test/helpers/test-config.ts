@@ -2,6 +2,7 @@ import type {
   AppConfig,
   BrowserConfig,
   LogLevel,
+  TelegramConfig,
   TwitchApiConfig,
 } from '../../src/config/index.js';
 
@@ -14,6 +15,7 @@ export interface TestConfigOverrides {
   readonly logLevel?: LogLevel;
   readonly twitchApi?: Partial<TwitchApiConfig>;
   readonly browser?: Partial<BrowserConfig>;
+  readonly telegram?: Partial<TelegramConfig>;
 }
 
 export function createTestConfig(
@@ -38,6 +40,13 @@ export function createTestConfig(
       rewardCheckIntervalSeconds: 15,
       restartOnCrash: true,
       ...overrides.browser,
+    },
+    telegram: {
+      enabled: false,
+      botToken: '',
+      allowedChatIds: [],
+      pollingTimeoutSeconds: 25,
+      ...overrides.telegram,
     },
   };
 }

@@ -22,6 +22,11 @@ import {
   selectActiveChannels,
 } from '../scheduler/index.js';
 import { DefaultSessionManager } from '../sessions/index.js';
+import {
+  DefaultTelegramBot,
+  TelegramApiClient,
+  type TelegramBot,
+} from '../telegram/index.js';
 import { TwitchApiClient } from '../twitch/index.js';
 import {
   DefaultAppRunner,
@@ -71,6 +76,7 @@ export function createDefaultRuntime(
   const sessionManagerReference: {
     current?: DefaultSessionManager;
   } = {};
+  let telegramBot: TelegramBot | undefined;
 
   const browserManager = new DefaultBrowserManager(config, {
     logger,
@@ -80,7 +86,10 @@ export function createDefaultRuntime(
         invalidation.reason,
       ),
   });
-  const rewardClaimer = new RewardClaimer({ logger });
+  const rewardClaimer = new RewardClaimer({
+    logger,
+    onResult: (result) => telegramBot?.notifyReward(result),
+  });
   const sessionFactory = new DefaultChannelSessionFactory({
     config,
     browserManager,
@@ -107,11 +116,27 @@ export function createDefaultRuntime(
     streamSelector: { selectActiveChannels },
     sessionManager,
     logger,
+    onStreamStatusChanged: (change) =>
+      telegramBot?.notifyStreamStatus(change),
   });
+  const integrations = config.telegram.enabled
+    ? [
+        (telegramBot = new DefaultTelegramBot({
+          config,
+          api: new TelegramApiClient({
+            botToken: config.telegram.botToken,
+          }),
+          scheduler,
+          sessionManager,
+          logger,
+        })),
+      ]
+    : [];
 
   return {
     browserManager,
     sessionManager,
     scheduler,
+    integrations,
   };
 }
