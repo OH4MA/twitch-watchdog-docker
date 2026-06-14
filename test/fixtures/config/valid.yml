@@ -1,0 +1,20 @@
+channels:
+  - streamer_one
+  - streamer_two
+  - streamer_three
+
+check_interval_seconds: 90
+max_concurrent_streams: 2
+headless: false
+storage_state_path: /tmp/test-storage-state.json
+log_level: debug
+
+twitch_api:
+  client_id: fixture-client-id
+  access_token: fixture-access-token
+
+browser:
+  navigation_timeout_ms: 45000
+  page_health_check_interval_seconds: 40
+  reward_check_interval_seconds: 20
+  restart_on_crash: false

@@ -1,0 +1,35 @@
+{
+  "name": "twitch-watchdog-docker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Twitch watchdog service built with TypeScript and Playwright.",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "packageManager": "npm@11.16.0",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "lint": "eslint .",
+    "start": "node dist/index.js",
+    "test": "vitest run --passWithNoTests",
+    "test:unit": "vitest run test/unit --passWithNoTests",
+    "test:integration": "vitest run test/integration --passWithNoTests",
+    "test:e2e": "playwright test --pass-with-no-tests"
+  },
+  "dependencies": {
+    "playwright": "1.60.0",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@playwright/test": "1.60.0",
+    "@types/node": "24.13.2",
+    "eslint": "10.5.0",
+    "tsx": "4.22.4",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.61.0",
+    "vitest": "4.1.8"
+  }
+}

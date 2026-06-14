@@ -1,0 +1,32 @@
+name: twitch-watchdog
+
+services:
+  twitch-watchdog:
+    build:
+      context: .
+      target: production
+    image: twitch-watchdog:local
+    container_name: twitch-watchdog
+    init: true
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp_profile.json
+    environment:
+      CONFIG_PATH: /app/config.yml
+      TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
+      TWITCH_ACCESS_TOKEN: ${TWITCH_ACCESS_TOKEN:-}
+    volumes:
+      - type: bind
+        source: ./config.yml
+        target: /app/config.yml
+        read_only: true
+      - type: bind
+        source: ./data/browser-state
+        target: /data/browser-state
+        read_only: true
+    shm_size: "1gb"
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    stop_grace_period: 40s

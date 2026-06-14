@@ -1,0 +1,16 @@
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+
+.env
+.env.*
+!.env.example
+
+data/browser-state/
+*.storage-state.json
+storage-state.json
+
+.DS_Store
+npm-debug.log*
