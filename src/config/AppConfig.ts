@@ -1,6 +1,8 @@
 export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 
 export type LogLevel = (typeof LOG_LEVELS)[number];
+export const STREAM_QUALITIES = ['auto', '160p', '360p', '480p'] as const;
+export type StreamQuality = (typeof STREAM_QUALITIES)[number];
 
 export interface TwitchApiConfig {
   readonly clientId: string;
@@ -13,6 +15,15 @@ export interface BrowserConfig {
   readonly pageHealthCheckIntervalSeconds: number;
   readonly rewardCheckIntervalSeconds: number;
   readonly restartOnCrash: boolean;
+  readonly streamQuality: StreamQuality;
+  readonly enforceStreamQualitySeconds: number;
+  readonly viewportWidth: number;
+  readonly viewportHeight: number;
+  readonly muteAudio: boolean;
+  readonly blockImages: boolean;
+  readonly blockFonts: boolean;
+  readonly blockKnownTracking: boolean;
+  readonly resourceTelemetryIntervalSeconds: number;
 }
 
 export interface TelegramConfig {

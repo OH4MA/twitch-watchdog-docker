@@ -37,6 +37,7 @@ import {
   type ApplicationRuntime,
   type RuntimeFactory,
 } from './AppRunner.js';
+import { RuntimeResourceMonitor } from './RuntimeResourceMonitor.js';
 
 export interface CreateApplicationOptions {
   readonly configPath?: string;
@@ -146,8 +147,16 @@ export function createDefaultRuntime(
       },
     },
   });
-  const integrations = config.telegram.enabled
-    ? [
+  const integrations = [
+    new RuntimeResourceMonitor({
+      browserManager,
+      sessionManager,
+      logger,
+      intervalSeconds:
+        config.browser.resourceTelemetryIntervalSeconds,
+    }),
+    ...(config.telegram.enabled
+      ? [
         (telegramBot = new DefaultTelegramBot({
           config,
           api: new TelegramApiClient({
@@ -159,7 +168,8 @@ export function createDefaultRuntime(
           logger,
         })),
       ]
-    : [];
+      : []),
+  ];
 
   return {
     browserManager,

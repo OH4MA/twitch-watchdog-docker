@@ -12,9 +12,15 @@ import type {
   RewardClaimer,
   RewardClaimResult,
 } from './RewardClaimer.js';
+import {
+  DefaultStreamPlaybackOptimizer,
+  type StreamPlaybackOptimizer,
+} from './StreamPlaybackOptimizer.js';
 
 const CHANNEL_PATTERN = /^[A-Za-z0-9_]{1,25}$/u;
 const DEFAULT_HEALTH_FAILURE_THRESHOLD = 3;
+const MAX_TIMER_JITTER_MS = 5_000;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export const CHANNEL_HEALTH_SELECTORS = Object.freeze({
   loginRequired: [
@@ -99,6 +105,7 @@ export interface DefaultChannelSessionOptions {
   readonly config: Pick<AppConfig, 'channels' | 'browser'>;
   readonly browserManager: BrowserManager;
   readonly rewardClaimer: RewardClaimer;
+  readonly playbackOptimizer?: StreamPlaybackOptimizer;
   readonly logger?: ChannelSessionLogger;
   readonly healthFailureThreshold?: number;
   readonly healthEvaluator?: ChannelHealthEvaluator;
@@ -110,6 +117,7 @@ export interface DefaultChannelSessionFactoryOptions {
   readonly config: Pick<AppConfig, 'channels' | 'browser'>;
   readonly browserManager: BrowserManager;
   readonly rewardClaimer: RewardClaimer;
+  readonly playbackOptimizer?: StreamPlaybackOptimizer;
   readonly logger?: ChannelSessionLogger;
   readonly healthFailureThreshold?: number;
   readonly healthEvaluator?: ChannelHealthEvaluator;
@@ -143,6 +151,7 @@ export class DefaultChannelSession implements ChannelSession {
   private readonly targetUrl: string;
   private readonly browserManager: BrowserManager;
   private readonly rewardClaimer: RewardClaimer;
+  private readonly playbackOptimizer: StreamPlaybackOptimizer;
   private readonly logger: ChannelSessionLogger;
   private readonly healthFailureThreshold: number;
   private readonly healthEvaluator: ChannelHealthEvaluator;
@@ -156,6 +165,7 @@ export class DefaultChannelSession implements ChannelSession {
   private consecutiveHealthFailures = 0;
   private healthTimer: NodeJS.Timeout | undefined;
   private rewardTimer: NodeJS.Timeout | undefined;
+  private playbackOptimizationTimer: NodeJS.Timeout | undefined;
   private healthFlight: Promise<ChannelHealthResult> | undefined;
   private rewardFlight: Promise<RewardClaimResult> | undefined;
   private lifecycleTail: Promise<void> = Promise.resolve();
@@ -169,6 +179,12 @@ export class DefaultChannelSession implements ChannelSession {
     this.browserManager = options.browserManager;
     this.rewardClaimer = options.rewardClaimer;
     this.logger = options.logger ?? NOOP_LOGGER;
+    this.playbackOptimizer =
+      options.playbackOptimizer ??
+      new DefaultStreamPlaybackOptimizer(
+        options.config.browser,
+        this.logger,
+      );
     this.healthFailureThreshold = positiveInteger(
       options.healthFailureThreshold,
       DEFAULT_HEALTH_FAILURE_THRESHOLD,
@@ -207,6 +223,7 @@ export class DefaultChannelSession implements ChannelSession {
         if (!isExpectedChannelUrl(page.url(), this.targetUrl)) {
           throw new Error('頻道頁面導向非預期 Twitch URL');
         }
+        await this.optimizePlayback(page);
 
         this.currentState = 'watching';
         this.startTimers();
@@ -389,6 +406,7 @@ export class DefaultChannelSession implements ChannelSession {
 
     try {
       await page.reload();
+      await this.optimizePlayback(page);
     } catch (error: unknown) {
       safeLog(this.logger, 'warn', 'page_reload_failed', {
         channel: this.channel,
@@ -452,39 +470,120 @@ export class DefaultChannelSession implements ChannelSession {
   private startTimers(): void {
     if (
       this.healthTimer !== undefined ||
-      this.rewardTimer !== undefined
+      this.rewardTimer !== undefined ||
+      this.playbackOptimizationTimer !== undefined
     ) {
       return;
     }
 
-    this.healthTimer = setInterval(() => {
-      void this.checkHealth().catch((error: unknown) => {
-        safeLog(this.logger, 'error', 'page_health_timer_failed', {
-          channel: this.channel,
-          error: safeErrorMessage(error),
-        });
-      });
-    }, this.options.config.browser.pageHealthCheckIntervalSeconds * 1_000);
-
-    this.rewardTimer = setInterval(() => {
-      void this.tickRewardClaim().catch((error: unknown) => {
-        safeLog(this.logger, 'error', 'reward_timer_failed', {
-          channel: this.channel,
-          error: safeErrorMessage(error),
-        });
-      });
-    }, this.options.config.browser.rewardCheckIntervalSeconds * 1_000);
+    this.scheduleHealthCheck();
+    this.scheduleRewardCheck();
+    this.schedulePlaybackOptimization();
   }
 
   private clearTimers(): void {
     if (this.healthTimer !== undefined) {
-      clearInterval(this.healthTimer);
+      clearTimeout(this.healthTimer);
       this.healthTimer = undefined;
     }
     if (this.rewardTimer !== undefined) {
-      clearInterval(this.rewardTimer);
+      clearTimeout(this.rewardTimer);
       this.rewardTimer = undefined;
     }
+    if (this.playbackOptimizationTimer !== undefined) {
+      clearTimeout(this.playbackOptimizationTimer);
+      this.playbackOptimizationTimer = undefined;
+    }
+  }
+
+  private async optimizePlayback(page: Page): Promise<void> {
+    try {
+      await this.playbackOptimizer.optimize(page, this.channel);
+    } catch (error: unknown) {
+      safeLog(this.logger, 'debug', 'stream_playback_optimization_failed', {
+        channel: this.channel,
+        error: safeErrorMessage(error),
+      });
+    }
+  }
+
+  private scheduleHealthCheck(): void {
+    if (!this.shouldScheduleWork()) {
+      return;
+    }
+    this.healthTimer = setTimeout(() => {
+      this.healthTimer = undefined;
+      void this.checkHealth()
+        .catch((error: unknown) => {
+          safeLog(this.logger, 'error', 'page_health_timer_failed', {
+            channel: this.channel,
+            error: safeErrorMessage(error),
+          });
+        })
+        .finally(() => {
+          this.scheduleHealthCheck();
+        });
+    }, this.timerDelay(
+      this.options.config.browser.pageHealthCheckIntervalSeconds,
+      'health',
+    ));
+  }
+
+  private scheduleRewardCheck(): void {
+    if (!this.shouldScheduleWork()) {
+      return;
+    }
+    this.rewardTimer = setTimeout(() => {
+      this.rewardTimer = undefined;
+      void this.tickRewardClaim()
+        .catch((error: unknown) => {
+          safeLog(this.logger, 'error', 'reward_timer_failed', {
+            channel: this.channel,
+            error: safeErrorMessage(error),
+          });
+        })
+        .finally(() => {
+          this.scheduleRewardCheck();
+        });
+    }, this.timerDelay(
+      this.options.config.browser.rewardCheckIntervalSeconds,
+      'reward',
+    ));
+  }
+
+  private schedulePlaybackOptimization(): void {
+    if (!this.shouldScheduleWork()) {
+      return;
+    }
+    this.playbackOptimizationTimer = setTimeout(() => {
+      this.playbackOptimizationTimer = undefined;
+      const page = this.page;
+      const work =
+        page === undefined || page.isClosed()
+          ? Promise.resolve()
+          : this.optimizePlayback(page);
+      void work.finally(() => {
+        this.schedulePlaybackOptimization();
+      });
+    }, this.timerDelay(
+      this.options.config.browser.enforceStreamQualitySeconds,
+      'playback',
+    ));
+  }
+
+  private timerDelay(intervalSeconds: number, task: string): number {
+    return Math.min(
+      MAX_TIMER_DELAY_MS,
+      intervalSeconds * 1_000 +
+        stableJitter(`${this.channel}:${task}`, MAX_TIMER_JITTER_MS),
+    );
+  }
+
+  private shouldScheduleWork(): boolean {
+    return (
+      this.currentState === 'watching' ||
+      this.currentState === 'recovering'
+    );
   }
 
   private async waitForCurrentWork(): Promise<void> {
@@ -604,14 +703,21 @@ async function isVisible(locator: Locator): Promise<boolean> {
 
 async function hasUnsupportedPlayerError(page: Page): Promise<boolean> {
   try {
-    const bodyText = await page.locator('body').textContent();
-    return (
-      bodyText !== null &&
-      (
-        /This video is either unavailable or not supported in this browser/iu
-          .test(bodyText) ||
-        /Error\s*#4000/iu.test(bodyText)
+    const playerText = (
+      await page
+      .locator(
+        [
+          '[data-a-target="player-error-message"]',
+          '[data-test-selector="video-player"]',
+          '[data-a-target="video-player"]',
+        ].join(', '),
       )
+        .allTextContents()
+    ).join(' ');
+    return (
+      /This video is either unavailable or not supported in this browser/iu
+        .test(playerText) ||
+      /Error\s*#4000/iu.test(playerText)
     );
   } catch {
     return false;
@@ -638,6 +744,18 @@ export function isExpectedChannelUrl(
 function normalizePath(pathname: string): string {
   const normalized = pathname.replace(/\/+$/u, '') || '/';
   return normalized.toLocaleLowerCase('en-US');
+}
+
+export function stableJitter(value: string, maximumMs: number): number {
+  if (!Number.isSafeInteger(maximumMs) || maximumMs <= 0) {
+    return 0;
+  }
+  let hash = 2_166_136_261;
+  for (const character of value) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return (hash >>> 0) % maximumMs;
 }
 
 function validateConfiguredChannel(

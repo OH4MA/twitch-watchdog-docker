@@ -76,6 +76,19 @@
 
 容器與無頭瀏覽器環境不應假設硬體影音解碼可用。不同作業系統、CPU 架構與 runtime 的硬體加速能力差異很大，因此直播解碼在部分環境中會主要消耗 CPU。
 
+## 實作狀態
+
+目前優化分支已完成：
+
+- 可設定低畫質與定期校正。
+- viewport 可設定但預設維持 `1280x720`，並自動靜音。
+- 圖片、字型與已知 tracking hostname 可獨立阻擋，但預設關閉以保留截圖內容。
+- 健康檢查與領點週期降低，並以穩定 jitter 自我排程。
+- 健康檢查不再讀取完整 `body.textContent()`。
+- 跨平台 runtime resource telemetry 與 JSONL 轉 CSV helper。
+
+實際 CPU、記憶體與 Channel Points 長時間驗收仍需依 P0 測試矩陣執行。最終短時間資源快照已在 `1280x720` 且圖片、字型與 tracking 阻擋皆關閉的設定下取得。
+
 ## 建議方案總覽
 
 依預期效益與實作風險排序：
@@ -84,8 +97,8 @@
 | --- | --- | --- | --- |
 | P0 | 建立可重複的 1／2／3 頻道 benchmark | 建立可靠基準 | 低 |
 | P1 | 強制低畫質並定期校正 | CPU、記憶體、流量改善最大 | 中 |
-| P1 | 縮小 viewport 並自動靜音 | 降低渲染與音訊成本 | 低至中 |
-| P1 | 阻擋確認不必要的頁面資源 | 降低記憶體與流量 | 中 |
+| P1 | 維持截圖 viewport 並自動靜音 | 降低音訊成本且不改變截圖 | 低 |
+| P1 | 選用阻擋確認不必要的頁面資源 | 降低記憶體與流量 | 中，預設關閉 |
 | P2 | 降低頁面輪詢頻率並加入 jitter | 降低週期性 CPU 峰值 | 低 |
 | P2 | 精簡健康檢查 DOM 操作 | 降低主執行緒與序列化成本 | 低 |
 | P3 | 加入資源 telemetry 與異常門檻 | 便於持續驗證與回歸追蹤 | 低 |
@@ -229,11 +242,11 @@ interface StreamPlaybackOptimizer {
 
 ```yaml
 browser:
-  viewport_width: 640
-  viewport_height: 360
+  viewport_width: 1280
+  viewport_height: 720
 ```
 
-預設 `640x360`，允許最小值例如 `320x180`。縮小 viewport 可降低畫面合成與截圖成本，但不保證降低影片解碼成本。
+預設維持原本的 `1280x720`。實機驗證顯示縮小 viewport 會改變 Twitch 響應式版面，並影響 Telegram 機器人回傳截圖，因此本輪不調降 viewport。設定仍保留供個別部署調整，但不列入預設資源最佳化。
 
 應確認小 viewport 不會讓 Twitch 切到完全不同且無法操作畫質選單的版面。如果畫質選單在小 viewport 隱藏，`StreamPlaybackOptimizer` 可以暫時透過 DOM 或 keyboard 操作，不應為了操作選單長期保留大 viewport。
 
@@ -285,8 +298,8 @@ await page.locator('video').first().evaluate((video) => {
 
 ```yaml
 browser:
-  block_images: true
-  block_fonts: true
+  block_images: false
+  block_fonts: false
   block_known_tracking: true
 ```
 
@@ -447,11 +460,11 @@ browser:
   restart_on_crash: true
   stream_quality: 160p
   enforce_stream_quality_seconds: 120
-  viewport_width: 640
-  viewport_height: 360
+  viewport_width: 1280
+  viewport_height: 720
   mute_audio: true
-  block_images: true
-  block_fonts: true
+  block_images: false
+  block_fonts: false
   block_known_tracking: false
 ```
 
@@ -508,8 +521,8 @@ Docker smoke 可集中在 Linux CI。macOS 與 Windows CI 不應因缺少相同 
 最可行的完整方案是：
 
 1. 強制最低可用畫質。
-2. 將 viewport 降至 `640x360` 並靜音。
-3. 阻擋已驗證不必要的圖片與字型。
+2. 維持 `1280x720` viewport，僅自動靜音。
+3. 保留圖片、字型與 tracking 阻擋開關，但預設關閉以維持機器人截圖。
 4. 將健康檢查調整為 60 秒、獎勵檢查調整為 30 秒。
 5. 將各 Page 的週期工作錯開。
 6. 移除完整 `body.textContent()` 健康掃描。

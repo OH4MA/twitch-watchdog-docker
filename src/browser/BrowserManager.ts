@@ -3,6 +3,7 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
+  type Request,
 } from 'playwright';
 
 import type { AppConfig } from '../config/AppConfig.js';
@@ -16,7 +17,10 @@ const DEFAULT_RESTART_BACKOFF_MS = 1_000;
 const DEFAULT_RESTART_BACKOFF_MAX_MS = 30_000;
 const DEFAULT_MAX_AUTOMATIC_RESTART_ATTEMPTS = 3;
 const DEFAULT_RESTART_ATTEMPT_RESET_MS = 60_000;
-const VIEWPORT = Object.freeze({ width: 1280, height: 720 });
+const TRACKING_HOSTNAMES = new Set([
+  'spade.twitch.tv',
+  'science.twitch.tv',
+]);
 
 const NOOP_LOGGER: BrowserManagerLogger = {
   debug(): void {},
@@ -29,7 +33,15 @@ export type BrowserManagerConfig = Pick<
   AppConfig,
   'headless' | 'storageStatePath'
 > & {
-  readonly browser: Pick<AppConfig['browser'], 'restartOnCrash'>;
+  readonly browser: Pick<
+    AppConfig['browser'],
+    | 'restartOnCrash'
+    | 'viewportWidth'
+    | 'viewportHeight'
+    | 'blockImages'
+    | 'blockFonts'
+    | 'blockKnownTracking'
+  >;
 };
 
 export interface BrowserLaunchOptions {
@@ -54,8 +66,15 @@ export interface BrowserPageAdapter {
 }
 
 export interface BrowserContextAdapter {
+  configureResourceBlocking(options: ResourceBlockingOptions): Promise<void>;
   newPage(): Promise<BrowserPageAdapter>;
   close(): Promise<void>;
+}
+
+export interface ResourceBlockingOptions {
+  readonly blockImages: boolean;
+  readonly blockFonts: boolean;
+  readonly blockKnownTracking: boolean;
 }
 
 export interface BrowserAdapter {
@@ -74,6 +93,7 @@ export interface BrowserManager {
   createPage(channel: string): Promise<Page>;
   closePage(channel: string): Promise<void>;
   restart(): Promise<void>;
+  getPageCount(): number;
 }
 
 export type BrowserInvalidationReason =
@@ -313,6 +333,10 @@ export class DefaultBrowserManager implements BrowserManager {
     return flight;
   }
 
+  public getPageCount(): number {
+    return this.pages.size;
+  }
+
   private async restartManually(): Promise<void> {
     const invalidatedChannels: string[] = [];
 
@@ -369,7 +393,15 @@ export class DefaultBrowserManager implements BrowserManager {
       });
       context = await browser.newContext({
         storageState: this.config.storageStatePath,
-        viewport: VIEWPORT,
+        viewport: {
+          width: this.config.browser.viewportWidth,
+          height: this.config.browser.viewportHeight,
+        },
+      });
+      await context.configureResourceBlocking({
+        blockImages: this.config.browser.blockImages,
+        blockFonts: this.config.browser.blockFonts,
+        blockKnownTracking: this.config.browser.blockKnownTracking,
       });
 
       this.browser = browser;
@@ -827,6 +859,25 @@ class PlaywrightBrowserAdapter implements BrowserAdapter {
 class PlaywrightBrowserContextAdapter implements BrowserContextAdapter {
   public constructor(private readonly context: BrowserContext) {}
 
+  public async configureResourceBlocking(
+    options: ResourceBlockingOptions,
+  ): Promise<void> {
+    if (
+      !options.blockImages &&
+      !options.blockFonts &&
+      !options.blockKnownTracking
+    ) {
+      return;
+    }
+    await this.context.route('**/*', async (route) => {
+      if (shouldBlockRequest(route.request(), options)) {
+        await route.abort('blockedbyclient');
+        return;
+      }
+      await route.continue();
+    });
+  }
+
   public async newPage(): Promise<BrowserPageAdapter> {
     const page = await this.context.newPage();
     return new PlaywrightBrowserPageAdapter(page);
@@ -834,6 +885,27 @@ class PlaywrightBrowserContextAdapter implements BrowserContextAdapter {
 
   public async close(): Promise<void> {
     await this.context.close();
+  }
+}
+
+function shouldBlockRequest(
+  request: Request,
+  options: ResourceBlockingOptions,
+): boolean {
+  const resourceType = request.resourceType();
+  if (options.blockImages && resourceType === 'image') {
+    return true;
+  }
+  if (options.blockFonts && resourceType === 'font') {
+    return true;
+  }
+  if (!options.blockKnownTracking) {
+    return false;
+  }
+  try {
+    return TRACKING_HOSTNAMES.has(new URL(request.url()).hostname);
+  } catch {
+    return false;
   }
 }
 

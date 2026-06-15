@@ -21,6 +21,7 @@ export {
   DefaultChannelSessionFactory,
   createChannelUrl,
   evaluateChannelHealth,
+  stableJitter,
   type ChannelHealthEvaluator,
   type ChannelHealthFailureReason,
   type ChannelHealthResult,
@@ -44,3 +45,10 @@ export {
   type RewardClaimerLogger,
   type RewardClaimerOptions,
 } from './RewardClaimer.js';
+export {
+  DefaultStreamPlaybackOptimizer,
+  chooseQuality,
+  type PlaybackOptimizationResult,
+  type StreamPlaybackOptimizer,
+  type StreamPlaybackOptimizerLogger,
+} from './StreamPlaybackOptimizer.js';

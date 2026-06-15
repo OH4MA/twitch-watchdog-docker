@@ -31,6 +31,8 @@ mkdir -p data/browser-state
 
 Twitch API 與 Telegram 設定由環境變數提供，不要把真實值寫入 `config.yml`。設定 `TWITCH_CLIENT_ID` 與 `TWITCH_CLIENT_SECRET` 後，服務會自動取得與換發 App Access Token。
 
+`browser` 預設會將直播設為 `160p`、每 120 秒重新校正、維持原本的 `1280x720` viewport 並靜音。為維持 Telegram 機器人截圖內容，圖片、字型與 tracking 阻擋預設皆關閉；需要時可個別啟用。`stream_quality: auto` 可停用強制畫質。
+
 ## Telegram 通知與管理
 
 Telegram 整合使用 Bot API 長輪詢。Server 不需要 GUI，也不需要開放 HTTP port；只要能以 HTTPS 連到 `api.telegram.org`，即可從手機或另一台設備操作。
@@ -196,6 +198,14 @@ docker compose logs --no-log-prefix twitch-watchdog | jq -c 'select(.event == "r
 ```
 
 主要事件包含 `service_started`、`config_loaded`、`credential_checked`、`stream_online`、`stream_offline`、`watch_started`、`watch_stopped`、`reward_claimed`、`reward_claim_failed`、`browser_restarted`、`page_health_failed` 與 `service_stopped`。Telegram 輪詢、傳送失敗與未授權 chat 也會留下不含訊息內容的事件。日誌會遮罩 cookie、token、Authorization header 與 storageState 內容。
+
+每隔 `browser.resource_telemetry_interval_seconds` 會輸出 `runtime_resource_snapshot`，包含 Node.js CPU、RSS、heap、active channel 與 browser page 數。可轉成 CSV：
+
+```bash
+docker compose logs --no-log-prefix twitch-watchdog \
+  | npm run benchmark:csv --silent \
+  > benchmark.csv
+```
 
 ## 開發與測試
 

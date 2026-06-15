@@ -2,9 +2,11 @@ import { readFile } from 'node:fs/promises';
 
 import {
   LOG_LEVELS,
+  STREAM_QUALITIES,
   type AppConfig,
   type BrowserConfig,
   type LogLevel,
+  type StreamQuality,
   type TelegramConfig,
   type TwitchApiConfig,
 } from './AppConfig.js';
@@ -21,8 +23,15 @@ const DEFAULT_MAX_CONCURRENT_STREAMS = 3;
 const DEFAULT_STORAGE_STATE_PATH =
   '/data/browser-state/storage-state.json';
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
-const DEFAULT_PAGE_HEALTH_CHECK_INTERVAL_SECONDS = 30;
-const DEFAULT_REWARD_CHECK_INTERVAL_SECONDS = 15;
+const DEFAULT_PAGE_HEALTH_CHECK_INTERVAL_SECONDS = 60;
+const DEFAULT_REWARD_CHECK_INTERVAL_SECONDS = 30;
+const DEFAULT_STREAM_QUALITY: StreamQuality = '160p';
+const DEFAULT_ENFORCE_STREAM_QUALITY_SECONDS = 120;
+const DEFAULT_VIEWPORT_WIDTH = 1280;
+const DEFAULT_VIEWPORT_HEIGHT = 720;
+const DEFAULT_RESOURCE_TELEMETRY_INTERVAL_SECONDS = 300;
+const MINIMUM_VIEWPORT_WIDTH = 320;
+const MINIMUM_VIEWPORT_HEIGHT = 180;
 const DEFAULT_TELEGRAM_POLLING_TIMEOUT_SECONDS = 25;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const MAX_TIMER_DELAY_SECONDS = Math.floor(MAX_TIMER_DELAY_MS / 1_000);
@@ -285,7 +294,70 @@ function buildBrowserConfig(value: unknown): BrowserConfig {
       'browser.restart_on_crash',
       true,
     ),
+    streamQuality: optionalStreamQuality(browser.stream_quality),
+    enforceStreamQualitySeconds: optionalPositiveInteger(
+      browser.enforce_stream_quality_seconds,
+      'browser.enforce_stream_quality_seconds',
+      DEFAULT_ENFORCE_STREAM_QUALITY_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    viewportWidth: optionalIntegerAtLeast(
+      browser.viewport_width,
+      'browser.viewport_width',
+      DEFAULT_VIEWPORT_WIDTH,
+      MINIMUM_VIEWPORT_WIDTH,
+      3_840,
+    ),
+    viewportHeight: optionalIntegerAtLeast(
+      browser.viewport_height,
+      'browser.viewport_height',
+      DEFAULT_VIEWPORT_HEIGHT,
+      MINIMUM_VIEWPORT_HEIGHT,
+      2_160,
+    ),
+    muteAudio: optionalBoolean(
+      browser.mute_audio,
+      'browser.mute_audio',
+      true,
+    ),
+    blockImages: optionalBoolean(
+      browser.block_images,
+      'browser.block_images',
+      false,
+    ),
+    blockFonts: optionalBoolean(
+      browser.block_fonts,
+      'browser.block_fonts',
+      false,
+    ),
+    blockKnownTracking: optionalBoolean(
+      browser.block_known_tracking,
+      'browser.block_known_tracking',
+      false,
+    ),
+    resourceTelemetryIntervalSeconds: optionalPositiveInteger(
+      browser.resource_telemetry_interval_seconds,
+      'browser.resource_telemetry_interval_seconds',
+      DEFAULT_RESOURCE_TELEMETRY_INTERVAL_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
   };
+}
+
+function optionalStreamQuality(value: unknown): StreamQuality {
+  if (value === undefined) {
+    return DEFAULT_STREAM_QUALITY;
+  }
+  if (
+    typeof value !== 'string' ||
+    !STREAM_QUALITIES.includes(value as StreamQuality)
+  ) {
+    throw new ConfigValidationError(
+      'browser.stream_quality',
+      `必須是 ${STREAM_QUALITIES.join('、')} 其中之一`,
+    );
+  }
+  return value as StreamQuality;
 }
 
 function requireChannels(value: unknown): readonly string[] {

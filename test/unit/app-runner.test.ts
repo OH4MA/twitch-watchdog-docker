@@ -47,9 +47,18 @@ const CONFIG: AppConfig = Object.freeze({
   }),
   browser: Object.freeze({
     navigationTimeoutMs: 30_000,
-    pageHealthCheckIntervalSeconds: 30,
-    rewardCheckIntervalSeconds: 15,
+    pageHealthCheckIntervalSeconds: 60,
+    rewardCheckIntervalSeconds: 30,
     restartOnCrash: true,
+    streamQuality: '160p',
+    enforceStreamQualitySeconds: 120,
+    viewportWidth: 1280,
+    viewportHeight: 720,
+    muteAudio: true,
+    blockImages: false,
+    blockFonts: false,
+    blockKnownTracking: false,
+    resourceTelemetryIntervalSeconds: 300,
   }),
   telegram: Object.freeze({
     enabled: false,
@@ -421,6 +430,7 @@ function createBrowserManager(
     createPage: vi.fn(async () => ({} as Page)),
     closePage: vi.fn(async () => undefined),
     restart: vi.fn(async () => undefined),
+    getPageCount: vi.fn(() => 0),
   };
 }
 

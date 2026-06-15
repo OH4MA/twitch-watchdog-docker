@@ -19,3 +19,7 @@ export {
   type ProcessHandlerTarget,
   type RemoveProcessHandlers,
 } from './installProcessHandlers.js';
+export {
+  RuntimeResourceMonitor,
+  type RuntimeResourceMonitorOptions,
+} from './RuntimeResourceMonitor.js';

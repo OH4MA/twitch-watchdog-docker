@@ -166,6 +166,8 @@ class TestContextAdapter implements BrowserContextAdapter {
 
   public constructor(private readonly pages: BrowserPageAdapter[]) {}
 
+  public async configureResourceBlocking(): Promise<void> {}
+
   public async newPage(): Promise<BrowserPageAdapter> {
     const page = this.pages[this.newPageCalls];
     this.newPageCalls += 1;

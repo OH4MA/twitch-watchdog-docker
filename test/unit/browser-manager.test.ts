@@ -27,6 +27,11 @@ function createConfig(
     storageStatePath: STORAGE_STATE_PATH,
     browser: {
       restartOnCrash: overrides.restartOnCrash ?? true,
+      viewportWidth: 1280,
+      viewportHeight: 720,
+      blockImages: false,
+      blockFonts: false,
+      blockKnownTracking: false,
     },
   };
 }
@@ -114,6 +119,9 @@ class MockPageAdapter implements BrowserPageAdapter {
 }
 
 class MockContextAdapter implements BrowserContextAdapter {
+  public readonly configureResourceBlocking = vi.fn(
+    async (): Promise<void> => undefined,
+  );
   public readonly newPage = vi.fn(async (): Promise<BrowserPageAdapter> => {
     if (this.newPageImplementation !== undefined) {
       return this.newPageImplementation();
@@ -220,7 +228,7 @@ class MockLauncher implements BrowserLauncher {
 }
 
 describe('DefaultBrowserManager', () => {
-  it('以 headless、storageState 與 1280x720 啟動，重複 start 不重建', async () => {
+  it('以 headless、storageState 與設定 viewport 啟動，重複 start 不重建', async () => {
     const context = new MockContextAdapter();
     const browser = new MockBrowserAdapter(context);
     const launcher = new MockLauncher([browser]);
@@ -241,6 +249,11 @@ describe('DefaultBrowserManager', () => {
         viewport: { width: 1280, height: 720 },
       },
     ]);
+    expect(context.configureResourceBlocking).toHaveBeenCalledWith({
+      blockImages: false,
+      blockFonts: false,
+      blockKnownTracking: false,
+    });
   });
 
   it('context 建立失敗時關閉 browser，之後可重新 start', async () => {

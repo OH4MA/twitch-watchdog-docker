@@ -210,14 +210,14 @@ git diff --check                 通過
 
 Vitest：
 
-- 17 個測試檔案
-- 243 項測試通過
+- 19 個測試檔案
+- 257 項測試通過
 
 Playwright E2E：
 
-- 12 項測試通過
+- 13 項測試通過
 - macOS managed sandbox 會阻擋 Chromium／Firefox Mach port，需在沙箱外執行。
-- Docker image 內 12 項 E2E 也已通過。
+- Docker image 內 13 項 E2E 也已通過。
 
 Docker：
 
@@ -228,7 +228,7 @@ Docker：
 Telegram screenshot 修正後：
 
 - Telegram Bot 單元測試 8／8 通過。
-- 完整 Vitest 243／243 通過。
+- 完整 Vitest 257／257 通過。
 - lint 與 TypeScript build 通過。
 
 ## 實際執行狀態與資源觀察
@@ -251,13 +251,9 @@ Telegram screenshot 修正後：
 - CPU、記憶體與網路用量會隨實際觀看 Page 數接近線性增加。
 - Node.js scheduler、Telegram 與 Helix API 不是主要瓶頸。
 
-## 跨平台最佳化規劃
+## 跨平台最佳化實作
 
-新增但尚未提交：
-
-- `doc/optimization.md`
-
-文件已整理完整跨平台方案，目標支援：
+`optimize/deep-resource-optimization` 分支已依 `doc/optimization.md` 完成第一階段深度最佳化：
 
 - Linux x86_64／ARM64。
 - macOS Intel／Apple Silicon。
@@ -274,16 +270,16 @@ Telegram screenshot 修正後：
 - 特定 shell 指令。
 - 特定 GPU、driver 或硬體解碼。
 
-規劃優先順序：
+已完成：
 
-1. 建立純 Node.js 跨平台 benchmark helper。
-2. 加入播放器最低畫質設定與安全降級。
-3. 將 viewport 調整為 `640x360` 並自動靜音。
-4. 透過 Playwright routing 阻擋已驗證不必要的圖片與字型。
+1. 加入播放器最低畫質設定、安全降級與每 120 秒重新校正。
+2. 支援 Twitch 新版 `role="menuitemradio"` 畫質選項，實頁已成功選到 `160p`。
+3. 維持原本 `1280x720` viewport 以保留機器人截圖版面，僅自動靜音。
+4. 提供 Playwright routing 圖片、字型與 tracking 阻擋開關；為保留機器人截圖，三者預設關閉。
 5. 健康檢查改為 60 秒，獎勵檢查改為 30 秒。
-6. 使用穩定 jitter 錯開各 Page 的週期工作。
-7. 移除完整 `body.textContent()` 健康掃描。
-8. 加入低頻率跨平台 runtime telemetry。
+6. 使用穩定 jitter 與自排程 `setTimeout` 錯開各 Page 的週期工作。
+7. 移除完整 `body.textContent()` 健康掃描，避免大範圍 DOM 序列化。
+8. 加入低頻率跨平台 runtime telemetry 與 JSONL 轉 CSV helper。
 
 不採用：
 
@@ -293,7 +289,16 @@ Telegram screenshot 修正後：
 - 依賴平台特定硬體加速。
 - 凍結或 background throttle Page。
 
-尚未實作任何最佳化程式碼，目前只有方案文件。
+2026-06-15 三個實際觀看 session 的單次比較：
+
+| 項目 | 最佳化前 | 最佳化後 |
+| --- | ---: | ---: |
+| 容器 CPU | 約 167.9% | 約 130.2% |
+| 容器記憶體 | 約 2.749 GiB | 約 2.075 GiB |
+| viewport | 1280x720 | 1280x720 |
+| 畫質 | Twitch 自動 | 160p |
+
+最終設定維持 `1280x720`，圖片、字型與 tracking 阻擋皆關閉。三個頻道均出現 `stream_playback_optimized`、`watch_started` 與 `reward_claimed`；啟動時偶發略過的頻道也會在 120 秒定期校正時補套用 `160p`。這是短時間單次觀察，不取代 15 分鐘以上的正式 benchmark。
 
 ## 已知風險
 
@@ -307,15 +312,11 @@ Telegram screenshot 修正後：
 
 ## 下一步
 
-目前最合理的工作順序：
+目前最合理的後續工作順序：
 
-1. Review `doc/optimization.md` 並建立文件 commit。
-2. 依文件 P0 實作跨平台 benchmark helper。
-3. 取得 1／2／3 個頻道各 15 分鐘的基準數據。
-4. 分開實作低畫質、靜音與 viewport，避免一次修改過多變因。
-5. 每個階段執行 lint、build、243 項 unit/integration、12 項 E2E 與 Docker smoke。
-6. 實際連續觀看至少 2 小時，確認 Points、截圖與 page health。
-7. 最終在 Linux、macOS、Windows CI 驗證主機模式；Docker smoke 集中於 Linux。
+1. 取得 1／2／3 個頻道各 15 分鐘的正式基準數據。
+2. 實際連續觀看至少 2 小時，確認 Points、截圖與 page health。
+3. 最終在 Linux、macOS、Windows CI 驗證主機模式；Docker smoke 集中於 Linux。
 
 ## 常用命令
 

@@ -47,10 +47,21 @@ function createConfig(
     browser: {
       navigationTimeoutMs: overrides.navigationTimeoutMs ?? 30_000,
       pageHealthCheckIntervalSeconds:
-        overrides.pageHealthCheckIntervalSeconds ?? 30,
+        overrides.pageHealthCheckIntervalSeconds ?? 60,
       rewardCheckIntervalSeconds:
-        overrides.rewardCheckIntervalSeconds ?? 15,
+        overrides.rewardCheckIntervalSeconds ?? 30,
       restartOnCrash: overrides.restartOnCrash ?? true,
+      streamQuality: overrides.streamQuality ?? '160p',
+      enforceStreamQualitySeconds:
+        overrides.enforceStreamQualitySeconds ?? 120,
+      viewportWidth: overrides.viewportWidth ?? 640,
+      viewportHeight: overrides.viewportHeight ?? 360,
+      muteAudio: overrides.muteAudio ?? true,
+      blockImages: overrides.blockImages ?? true,
+      blockFonts: overrides.blockFonts ?? true,
+      blockKnownTracking: overrides.blockKnownTracking ?? false,
+      resourceTelemetryIntervalSeconds:
+        overrides.resourceTelemetryIntervalSeconds ?? 300,
     },
   };
 }
@@ -139,6 +150,7 @@ function createBrowserManager(page: Page): {
       createPage,
       closePage,
       restart: vi.fn(async () => undefined),
+      getPageCount: vi.fn(() => 1),
     },
     createPage,
     closePage,
@@ -521,7 +533,7 @@ describe('DefaultChannelSession', () => {
     });
     await session.start();
 
-    vi.advanceTimersByTime(1_000);
+    vi.advanceTimersByTime(6_000);
     await Promise.resolve();
     expect(healthEvaluator).toHaveBeenCalledOnce();
     expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
