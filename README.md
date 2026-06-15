@@ -61,7 +61,7 @@ export TELEGRAM_ALLOWED_CHAT_IDS='你的 chat ID'
 - `/check`：立即執行一次 Twitch 狀態檢查。
 - `/pause`：暫停自動檢查，不會遠端停止容器。
 - `/resume`：恢復自動檢查。
-- `/screenshot`：回傳第一個目前觀看中頻道的瀏覽器畫面。
+- `/screenshot`：回傳所有目前觀看中頻道的瀏覽器畫面。
 - `/screenshot 頻道名稱`：回傳指定觀看中頻道的瀏覽器畫面。
 - `/help`：顯示指令說明。
 

@@ -170,6 +170,40 @@ describe('DefaultTelegramBot', () => {
     expect(harness.api.sendPhoto).not.toHaveBeenCalled();
   });
 
+  it('未指定頻道時回傳所有 active session 截圖', async () => {
+    const harness = createHarness(
+      [update(1, '42', '/screenshot')],
+      ['first', 'second'],
+    );
+
+    await harness.bot.start();
+    await vi.waitFor(() => {
+      expect(harness.api.sendPhoto).toHaveBeenCalledTimes(2);
+    });
+    await harness.bot.stop('test');
+
+    expect(harness.api.sendPhoto).toHaveBeenNthCalledWith(
+      1,
+      '42',
+      Buffer.from('screenshot:first'),
+      'first.png',
+      'first 目前瀏覽器畫面',
+    );
+    expect(harness.api.sendPhoto).toHaveBeenNthCalledWith(
+      2,
+      '42',
+      Buffer.from('screenshot:second'),
+      'second.png',
+      'second 目前瀏覽器畫面',
+    );
+    expect(
+      harness.sessionManager.captureScreenshot,
+    ).toHaveBeenNthCalledWith(1, 'first');
+    expect(
+      harness.sessionManager.captureScreenshot,
+    ).toHaveBeenNthCalledWith(2, 'second');
+  });
+
   it('可由指令更新頻道清單與最大同時觀看', async () => {
     const harness = createHarness([
       update(1, '42', '/config'),
@@ -329,6 +363,7 @@ function createHarness(
     logger,
     runtimeConfigManager,
     scheduler,
+    sessionManager,
   };
 }
 

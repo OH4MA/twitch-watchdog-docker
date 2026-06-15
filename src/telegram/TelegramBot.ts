@@ -276,6 +276,36 @@ export class DefaultTelegramBot implements TelegramBot {
     chatId: string,
     requestedChannel: string | undefined,
   ): Promise<void> {
+    if (requestedChannel === undefined) {
+      const activeChannels = this.options.sessionManager.getActiveChannels();
+      if (activeChannels.length === 0) {
+        await this.options.api.sendMessage(
+          chatId,
+          '目前沒有正在觀看的頻道可供截圖。',
+        );
+        return;
+      }
+
+      let sentCount = 0;
+      for (const channel of activeChannels) {
+        const screenshot =
+          await this.options.sessionManager.captureScreenshot(channel);
+        if (screenshot === undefined) {
+          continue;
+        }
+        await this.sendSessionScreenshot(chatId, screenshot);
+        sentCount += 1;
+      }
+
+      if (sentCount === 0) {
+        await this.options.api.sendMessage(
+          chatId,
+          '目前沒有正在觀看的頻道可供截圖。',
+        );
+      }
+      return;
+    }
+
     const screenshot = await this.options.sessionManager.captureScreenshot(
       requestedChannel,
     );
@@ -293,6 +323,16 @@ export class DefaultTelegramBot implements TelegramBot {
       return;
     }
 
+    await this.sendSessionScreenshot(chatId, screenshot);
+  }
+
+  private async sendSessionScreenshot(
+    chatId: string,
+    screenshot: {
+      readonly channel: string;
+      readonly image: Buffer;
+    },
+  ): Promise<void> {
     await this.options.api.sendPhoto(
       chatId,
       screenshot.image,
@@ -508,7 +548,7 @@ const HELP_TEXT = [
   '/check - 立即檢查一次',
   '/pause - 暫停自動檢查',
   '/resume - 恢復自動檢查',
-  '/screenshot [頻道] - 回傳目前瀏覽器畫面',
+  '/screenshot [頻道] - 回傳全部或指定頻道畫面',
   '/help - 顯示說明',
 ].join('\n');
 

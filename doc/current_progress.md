@@ -167,7 +167,7 @@ npm test
 Vitest 結果：
 
 - 18 個測試檔案通過
-- 249 個測試通過
+- 250 個測試通過
 
 Bonus Channel Points 與 Drops 修改後另已通過：
 
