@@ -7,6 +7,7 @@ test-results/
 .env
 .env.*
 !.env.example
+config.yml
 
 data/browser-state/
 *.storage-state.json
