@@ -18,6 +18,7 @@ describe('DefaultTelegramBot', () => {
       update(3, '42', '/pause'),
       update(4, '42', '/resume'),
       update(5, '42', '/channels'),
+      update(6, '42', '/screenshot second'),
     ]);
 
     await harness.bot.start();
@@ -33,6 +34,20 @@ describe('DefaultTelegramBot', () => {
       ([, text]) => text,
     );
     expect(messages[0]).toContain('Twitch Watchdog 已啟動');
+    expect(harness.api.setMyCommands).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        {
+          command: 'status',
+          description: '顯示服務與觀看狀態',
+        },
+      ]),
+    );
+    expect(harness.api.sendMessage.mock.calls[0]?.[2]).toEqual({
+      reply_markup: expect.objectContaining({
+        is_persistent: true,
+        resize_keyboard: true,
+      }),
+    });
     expect(messages).toContain('已完成一次狀態檢查。');
     expect(messages).toContain('自動檢查已暫停。');
     expect(messages).toContain('自動檢查已恢復。');
@@ -42,9 +57,15 @@ describe('DefaultTelegramBot', () => {
     expect(messages.some((text) => text.includes('1. 🔴 first'))).toBe(
       true,
     );
+    expect(harness.api.sendPhoto).toHaveBeenCalledWith(
+      '42',
+      Buffer.from('screenshot:second'),
+      'second.png',
+      'second 目前瀏覽器畫面',
+    );
     expect(messages.at(-1)).toContain('Twitch Watchdog 已停止');
     expect(harness.api.getUpdates.mock.calls[0]?.[0]).toBeUndefined();
-    expect(harness.api.getUpdates.mock.calls[1]?.[0]).toBe(6);
+    expect(harness.api.getUpdates.mock.calls[1]?.[0]).toBe(7);
   });
 
   it('忽略未授權 chat 且不執行管理指令', async () => {
@@ -105,12 +126,23 @@ describe('DefaultTelegramBot', () => {
       channel: 'first',
       checkedAt: '2026-06-14T00:00:00.000Z',
     });
+    await harness.bot.notifyDrop({
+      status: 'claimed',
+      claimedAt: '2026-06-14T00:00:00.000Z',
+      claimedCount: 2,
+      failedCount: 0,
+    });
+    await harness.bot.notifyDrop({
+      status: 'not_found',
+      checkedAt: '2026-06-14T00:00:00.000Z',
+    });
 
-    expect(harness.api.sendMessage).toHaveBeenCalledTimes(3);
+    expect(harness.api.sendMessage).toHaveBeenCalledTimes(4);
     expect(harness.api.sendMessage.mock.calls.map(([, text]) => text)).toEqual([
       '🔴 first 已開台',
       '⚫ first 已離線',
       '🎁 first 已領取忠誠點數',
+      '🎁 已領取 2 個 Twitch Drops',
     ]);
   });
 
@@ -122,9 +154,64 @@ describe('DefaultTelegramBot', () => {
     expect(harness.api.sendMessage).not.toHaveBeenCalled();
     expect(harness.api.getUpdates).not.toHaveBeenCalled();
   });
+
+  it('沒有 active session 時截圖指令回覆提示', async () => {
+    const harness = createHarness([update(1, '42', '/screenshot')], []);
+
+    await harness.bot.start();
+    await vi.waitFor(() => {
+      expect(harness.api.sendMessage).toHaveBeenCalledWith(
+        '42',
+        '目前沒有正在觀看的頻道可供截圖。',
+      );
+    });
+    await harness.bot.stop('test');
+
+    expect(harness.api.sendPhoto).not.toHaveBeenCalled();
+  });
+
+  it('可由指令更新頻道清單與最大同時觀看', async () => {
+    const harness = createHarness([
+      update(1, '42', '/config'),
+      update(2, '42', '/channel_add third'),
+      update(3, '42', '/max_streams 2'),
+      update(4, '42', '/channel_remove first'),
+      update(5, '42', '/channels_set alpha,beta gamma'),
+    ]);
+
+    await harness.bot.start();
+    await vi.waitFor(() => {
+      expect(harness.runtimeConfigManager.setChannels).toHaveBeenCalledTimes(3);
+    });
+    await harness.bot.stop('test');
+
+    expect(harness.runtimeConfigManager.setChannels).toHaveBeenNthCalledWith(
+      1,
+      ['first', 'second', 'third'],
+    );
+    expect(
+      harness.runtimeConfigManager.setMaxConcurrentStreams,
+    ).toHaveBeenCalledWith(2);
+    expect(harness.runtimeConfigManager.setChannels).toHaveBeenNthCalledWith(
+      2,
+      ['second', 'third'],
+    );
+    expect(harness.runtimeConfigManager.setChannels).toHaveBeenNthCalledWith(
+      3,
+      ['alpha', 'beta', 'gamma'],
+    );
+    expect(
+      harness.api.sendMessage.mock.calls.some(([, text]) =>
+        text.includes('監控頻道：first、second'),
+      ),
+    ).toBe(true);
+  });
 });
 
-function createHarness(updates: readonly TelegramUpdate[]) {
+function createHarness(
+  updates: readonly TelegramUpdate[],
+  activeChannels: readonly string[] = ['first', 'second'],
+) {
   let served = false;
   const getUpdates = vi.fn<TelegramApi['getUpdates']>(
     async (_offset, _timeout, signal) => {
@@ -141,11 +228,18 @@ function createHarness(updates: readonly TelegramUpdate[]) {
   const sendMessage = vi
     .fn<TelegramApi['sendMessage']>()
     .mockResolvedValue(undefined);
-  const api = { getUpdates, sendMessage };
+  const setMyCommands = vi
+    .fn<TelegramApi['setMyCommands']>()
+    .mockResolvedValue(undefined);
+  const sendPhoto = vi
+    .fn<TelegramApi['sendPhoto']>()
+    .mockResolvedValue(undefined);
+  const api = { getUpdates, setMyCommands, sendMessage, sendPhoto };
   const scheduler = {
     start: vi.fn(),
     stop: vi.fn(async () => undefined),
     runOnce: vi.fn(async () => undefined),
+    updateConfig: vi.fn(async () => undefined),
     getSnapshot: vi.fn(() => ({
       running: true,
       checkInFlight: false,
@@ -156,11 +250,55 @@ function createHarness(updates: readonly TelegramUpdate[]) {
       ],
     })),
   } satisfies WatchdogScheduler;
+  let runtimeConfig = {
+    channels: [...activeChannels],
+    maxConcurrentStreams: Math.min(2, activeChannels.length),
+  };
+  const setChannels = vi.fn(async (channels: readonly string[]) => {
+    runtimeConfig = {
+      channels: [...channels],
+      maxConcurrentStreams: Math.min(
+        runtimeConfig.maxConcurrentStreams,
+        channels.length,
+      ),
+    };
+    return runtimeConfig;
+  });
+  const setMaxConcurrentStreams = vi.fn(async (value: number) => {
+    runtimeConfig = {
+      channels: [...runtimeConfig.channels],
+      maxConcurrentStreams: value,
+    };
+    return runtimeConfig;
+  });
+  const runtimeConfigManager = {
+    getConfig: vi.fn(() => runtimeConfig),
+    setChannels,
+    setMaxConcurrentStreams,
+  };
   const sessionManager = {
     reconcile: vi.fn(async () => undefined),
     stopAll: vi.fn(async () => undefined),
     invalidate: vi.fn(async () => undefined),
-    getActiveChannels: vi.fn(() => ['first']),
+    getActiveChannels: vi.fn(() => [...activeChannels]),
+    captureScreenshot: vi.fn(async (channel?: string) => {
+      const selected = channel ?? activeChannels[0];
+      if (
+        selected === undefined ||
+        !activeChannels.some(
+          (active) => active.toLowerCase() === selected.toLowerCase(),
+        )
+      ) {
+        return undefined;
+      }
+      const actual = activeChannels.find(
+        (active) => active.toLowerCase() === selected.toLowerCase(),
+      ) ?? selected;
+      return {
+        channel: actual,
+        image: Buffer.from(`screenshot:${actual}`),
+      };
+    }),
   } satisfies SessionManager;
   const logger = {
     debug: vi.fn(),
@@ -181,10 +319,17 @@ function createHarness(updates: readonly TelegramUpdate[]) {
     api,
     scheduler,
     sessionManager,
+    runtimeConfigManager,
     logger,
   });
 
-  return { api, bot, logger, scheduler };
+  return {
+    api,
+    bot,
+    logger,
+    runtimeConfigManager,
+    scheduler,
+  };
 }
 
 function update(

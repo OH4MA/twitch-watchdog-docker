@@ -233,7 +233,7 @@ describe('DefaultBrowserManager', () => {
 
     expect(launcher.launch).toHaveBeenCalledOnce();
     expect(launcher.options).toEqual([
-      { headless: false, chromiumSandbox: true },
+      { headless: false },
     ]);
     expect(browser.contextOptions).toEqual([
       {

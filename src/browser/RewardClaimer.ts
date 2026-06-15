@@ -7,7 +7,10 @@ import {
 } from '../logging/index.js';
 
 export const COMMUNITY_POINTS_CLAIM_BUTTON_SELECTOR =
-  '[data-test-selector="community-points-claim-button"]';
+  [
+    '[data-test-selector="community-points-claim-button"]',
+    '.claimable-bonus__icon',
+  ].join(', ');
 export const COMMUNITY_POINTS_SUMMARY_SELECTOR =
   '[data-test-selector="community-points-summary"]';
 export const REWARD_BUTTON_LIKE_SELECTOR =
@@ -200,7 +203,8 @@ async function findClaimButton(page: Page): Promise<Locator | null> {
       const candidate = candidates.nth(candidateIndex);
       if (
         (await candidate.isVisible()) &&
-        !(await candidate.isDisabled())
+        !(await candidate.isDisabled()) &&
+        (await candidate.getAttribute('aria-label')) === null
       ) {
         if (fallback !== null) {
           return null;
@@ -222,13 +226,18 @@ async function firstClickable(
 
     if (
       (await candidate.isVisible()) &&
-      !(await candidate.isDisabled())
+      !(await candidate.isDisabled()) &&
+      !isDestructiveButton(await candidate.getAttribute('class'))
     ) {
       return candidate;
     }
   }
 
   return null;
+}
+
+function isDestructiveButton(className: string | null): boolean {
+  return className?.includes('ScCoreButtonDestructive') ?? false;
 }
 
 function resolveClock(clock: RewardClaimerClock | undefined): () => Date {

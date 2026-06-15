@@ -8,6 +8,7 @@ import {
   type Logger,
 } from '../logging/index.js';
 import type { BrowserManager } from './BrowserManager.js';
+import type { DropClaimer } from './DropClaimer.js';
 import type {
   RewardClaimer,
   RewardClaimResult,
@@ -72,6 +73,7 @@ export interface ChannelSession {
   stop(reason: string): Promise<void>;
   checkHealth(): Promise<ChannelHealthResult>;
   tickRewardClaim(): Promise<RewardClaimResult>;
+  captureScreenshot(): Promise<Buffer>;
 }
 
 export interface ChannelSessionFactory {
@@ -98,6 +100,7 @@ export interface DefaultChannelSessionOptions {
   readonly config: Pick<AppConfig, 'channels' | 'browser'>;
   readonly browserManager: BrowserManager;
   readonly rewardClaimer: RewardClaimer;
+  readonly dropClaimer?: Pick<DropClaimer, 'claimIfAvailable'>;
   readonly logger?: ChannelSessionLogger;
   readonly healthFailureThreshold?: number;
   readonly healthEvaluator?: ChannelHealthEvaluator;
@@ -109,6 +112,7 @@ export interface DefaultChannelSessionFactoryOptions {
   readonly config: Pick<AppConfig, 'channels' | 'browser'>;
   readonly browserManager: BrowserManager;
   readonly rewardClaimer: RewardClaimer;
+  readonly dropClaimer?: Pick<DropClaimer, 'claimIfAvailable'>;
   readonly logger?: ChannelSessionLogger;
   readonly healthFailureThreshold?: number;
   readonly healthEvaluator?: ChannelHealthEvaluator;
@@ -142,6 +146,9 @@ export class DefaultChannelSession implements ChannelSession {
   private readonly targetUrl: string;
   private readonly browserManager: BrowserManager;
   private readonly rewardClaimer: RewardClaimer;
+  private readonly dropClaimer:
+    | Pick<DropClaimer, 'claimIfAvailable'>
+    | undefined;
   private readonly logger: ChannelSessionLogger;
   private readonly healthFailureThreshold: number;
   private readonly healthEvaluator: ChannelHealthEvaluator;
@@ -167,6 +174,7 @@ export class DefaultChannelSession implements ChannelSession {
     this.targetUrl = createChannelUrl(options.channel);
     this.browserManager = options.browserManager;
     this.rewardClaimer = options.rewardClaimer;
+    this.dropClaimer = options.dropClaimer;
     this.logger = options.logger ?? NOOP_LOGGER;
     this.healthFailureThreshold = positiveInteger(
       options.healthFailureThreshold,
@@ -306,6 +314,24 @@ export class DefaultChannelSession implements ChannelSession {
     return flight;
   }
 
+  public async captureScreenshot(): Promise<Buffer> {
+    const page = this.page;
+    if (
+      page === undefined ||
+      page.isClosed() ||
+      (this.currentState !== 'watching' &&
+        this.currentState !== 'recovering')
+    ) {
+      throw new Error('頻道頁面目前無法截圖');
+    }
+
+    const screenshot = await page.screenshot({
+      type: 'png',
+      fullPage: false,
+    });
+    return Buffer.from(screenshot);
+  }
+
   private async runHealthCheck(): Promise<ChannelHealthResult> {
     const page = this.page;
     if (page === undefined) {
@@ -409,10 +435,11 @@ export class DefaultChannelSession implements ChannelSession {
     }
 
     try {
-      return await this.rewardClaimer.claimIfAvailable(
-        page,
-        this.channel,
-      );
+      const [rewardResult] = await Promise.all([
+        this.rewardClaimer.claimIfAvailable(page, this.channel),
+        this.claimDrops(page),
+      ]);
+      return rewardResult;
     } catch (error: unknown) {
       const checkedAt = this.now().toISOString();
       const safeError = safeErrorMessage(error);
@@ -427,6 +454,17 @@ export class DefaultChannelSession implements ChannelSession {
         checkedAt,
         error: safeError,
       };
+    }
+  }
+
+  private async claimDrops(page: Page): Promise<void> {
+    try {
+      await this.dropClaimer?.claimIfAvailable(page);
+    } catch (error: unknown) {
+      safeLog(this.logger, 'warn', 'drop_claim_unexpected_failure', {
+        channel: this.channel,
+        error: safeErrorMessage(error),
+      });
     }
   }
 
@@ -552,7 +590,10 @@ export async function evaluateChannelHealth(
       return { healthy: false, reason: 'login_required' };
     }
 
-    if (await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.error))) {
+    if (
+      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.error)) ||
+      await hasUnsupportedPlayerError(page)
+    ) {
       return { healthy: false, reason: 'error_page' };
     }
 
@@ -578,6 +619,22 @@ export async function evaluateChannelHealth(
 
 async function isVisible(locator: Locator): Promise<boolean> {
   return locator.first().isVisible();
+}
+
+async function hasUnsupportedPlayerError(page: Page): Promise<boolean> {
+  try {
+    const bodyText = await page.locator('body').textContent();
+    return (
+      bodyText !== null &&
+      (
+        /This video is either unavailable or not supported in this browser/iu
+          .test(bodyText) ||
+        /Error\s*#4000/iu.test(bodyText)
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function isExpectedChannelUrl(

@@ -17,3 +17,10 @@ export {
   ConfigParseError,
   ConfigValidationError,
 } from './errors.js';
+export {
+  YamlRuntimeConfigManager,
+  type RuntimeConfigManager,
+  type RuntimeWatchConfig,
+  type RuntimeWatchConfigTarget,
+  type YamlRuntimeConfigManagerOptions,
+} from './RuntimeConfigManager.js';

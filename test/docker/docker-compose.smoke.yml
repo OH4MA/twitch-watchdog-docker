@@ -12,7 +12,6 @@ services:
       - type: bind
         source: ${SMOKE_CONFIG_PATH:?SMOKE_CONFIG_PATH is required}
         target: /app/config.yml
-        read_only: true
       - type: bind
         source: ${SMOKE_STATE_DIR:?SMOKE_STATE_DIR is required}
         target: /data/browser-state

@@ -367,6 +367,39 @@ describe('DefaultWatchdogScheduler', () => {
     );
   });
 
+  it('更新 runtime config 後立即套用新頻道與同時觀看上限', async () => {
+    const harness = createHarness({
+      channels: ['first', 'second'],
+      maxConcurrentStreams: 2,
+    });
+    harness.getLiveStatuses
+      .mockResolvedValueOnce([
+        status('first', true),
+        status('second', true),
+      ])
+      .mockResolvedValueOnce([
+        status('second', true),
+        status('third', false),
+      ]);
+
+    await harness.scheduler.runOnce();
+    await harness.scheduler.updateConfig({
+      channels: ['second', 'third'],
+      maxConcurrentStreams: 1,
+    });
+
+    expect(harness.getLiveStatuses).toHaveBeenLastCalledWith([
+      'second',
+      'third',
+    ]);
+    expect(harness.reconcile).toHaveBeenNthCalledWith(2, ['second']);
+    expect(harness.reconcile).toHaveBeenLastCalledWith(['second']);
+    expect(harness.scheduler.getSnapshot().channels).toEqual([
+      { channel: 'second', isLive: true },
+      { channel: 'third', isLive: false },
+    ]);
+  });
+
   it('錯誤日誌不轉送 API 原始錯誤中的 token、Authorization 或 Bearer 值', async () => {
     const secret = 'scheduler-secret-token';
     const harness = createHarness({ channels: ['live'] });
@@ -443,6 +476,7 @@ function createHarness(options: HarnessOptions = {}) {
       stopAll,
       getActiveChannels,
       invalidate,
+      captureScreenshot: vi.fn(async () => undefined),
     },
     logger,
     ...(options.timer === undefined

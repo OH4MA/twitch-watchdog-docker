@@ -262,10 +262,11 @@ export function safeErrorMessage(
   for (const sensitiveValue of [
     config.twitchApi.accessToken,
     config.twitchApi.clientId,
+    config.twitchApi.clientSecret,
     config.storageStatePath,
     config.telegram.botToken,
   ]) {
-    if (sensitiveValue.length > 0) {
+    if ((sensitiveValue ?? '').length > 0) {
       safeMessage = safeMessage.replaceAll(sensitiveValue, '[REDACTED]');
     }
   }

@@ -15,6 +15,8 @@ const START_TIME = new Date('2026-06-14T12:00:00.000Z');
 type MockElement = {
   readonly visible?: boolean;
   readonly disabled?: boolean;
+  readonly ariaLabel?: string;
+  readonly className?: string;
   readonly click?: () => Promise<void>;
   readonly descendants?: readonly MockElement[];
 };
@@ -49,6 +51,16 @@ class MockLocator {
 
   public async isDisabled(): Promise<boolean> {
     return this.elements[0]?.disabled ?? false;
+  }
+
+  public async getAttribute(name: string): Promise<string | null> {
+    if (name === 'aria-label') {
+      return this.elements[0]?.ariaLabel ?? null;
+    }
+    if (name === 'class') {
+      return this.elements[0]?.className ?? null;
+    }
+    return null;
   }
 
   public async click(): Promise<void> {
@@ -157,6 +169,25 @@ describe('RewardClaimer', () => {
     expect(secondClick).not.toHaveBeenCalled();
   });
 
+  it('summary 內有 aria-label 的餘額控制不視為領取按鈕', async () => {
+    const balanceClick = vi.fn(async () => undefined);
+    const claimer = new RewardClaimer({ clock: () => START_TIME });
+
+    const result = await claimer.claimIfAvailable(
+      createPage({
+        fallback: [{
+          visible: true,
+          ariaLabel: 'Bits and Points Balances',
+          click: balanceClick,
+        }],
+      }),
+      'streamer_balance',
+    );
+
+    expect(result.status).toBe('not_found');
+    expect(balanceClick).not.toHaveBeenCalled();
+  });
+
   it('primary selector 已存在但 disabled 時不使用 fallback', async () => {
     const primaryClick = vi.fn(async () => undefined);
     const fallbackClick = vi.fn(async () => undefined);
@@ -175,6 +206,25 @@ describe('RewardClaimer', () => {
     expect(result.status).toBe('not_found');
     expect(primaryClick).not.toHaveBeenCalled();
     expect(fallbackClick).not.toHaveBeenCalled();
+  });
+
+  it('BetterTTV selector 若帶 destructive class 時不點擊', async () => {
+    const click = vi.fn(async () => undefined);
+    const claimer = new RewardClaimer({ clock: () => START_TIME });
+
+    const result = await claimer.claimIfAvailable(
+      createPage({
+        primary: [{
+          visible: true,
+          className: 'claimable-bonus__icon ScCoreButtonDestructive',
+          click,
+        }],
+      }),
+      'streamer_destructive',
+    );
+
+    expect(result.status).toBe('not_found');
+    expect(click).not.toHaveBeenCalled();
   });
 
   it('按鈕不可見時回傳 not_found', async () => {

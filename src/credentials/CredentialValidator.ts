@@ -67,7 +67,10 @@ export class FileCredentialValidator implements CredentialValidator {
       hasCookies,
       twitchApiConfigured:
         config.twitchApi.clientId.trim().length > 0 &&
-        config.twitchApi.accessToken.trim().length > 0,
+        (
+          config.twitchApi.accessToken.trim().length > 0 ||
+          config.twitchApi.clientSecret.trim().length > 0
+        ),
     });
 
     if (!hasCookies) {

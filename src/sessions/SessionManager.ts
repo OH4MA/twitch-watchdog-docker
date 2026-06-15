@@ -18,6 +18,12 @@ export interface SessionManager {
   stopAll(reason: string): Promise<void>;
   invalidate(channel: string, reason: string): Promise<void>;
   getActiveChannels(): string[];
+  captureScreenshot(channel?: string): Promise<SessionScreenshot | undefined>;
+}
+
+export interface SessionScreenshot {
+  readonly channel: string;
+  readonly image: Buffer;
 }
 
 export type SessionManagerLogger = Pick<Logger, 'error' | 'warn'>;
@@ -95,6 +101,24 @@ export class DefaultSessionManager implements SessionManager {
 
   public getActiveChannels(): string[] {
     return [...this.sessions.keys()];
+  }
+
+  public async captureScreenshot(
+    requestedChannel?: string,
+  ): Promise<SessionScreenshot | undefined> {
+    const entry = requestedChannel === undefined
+      ? this.sessions.entries().next().value
+      : findSession(this.sessions, requestedChannel);
+
+    if (entry === undefined) {
+      return undefined;
+    }
+
+    const [channel, session] = entry;
+    return {
+      channel,
+      image: await session.captureScreenshot(),
+    };
   }
 
   private async startSession(channel: string): Promise<void> {
@@ -183,6 +207,16 @@ export class DefaultSessionManager implements SessionManager {
 
 function uniqueChannels(channels: readonly string[]): string[] {
   return [...new Set(channels)];
+}
+
+function findSession(
+  sessions: ReadonlyMap<string, ChannelSession>,
+  requestedChannel: string,
+): readonly [string, ChannelSession] | undefined {
+  const normalized = requestedChannel.trim().toLocaleLowerCase('en-US');
+  return [...sessions].find(
+    ([channel]) => channel.toLocaleLowerCase('en-US') === normalized,
+  );
 }
 
 function safeErrorMessage(error: unknown): string {

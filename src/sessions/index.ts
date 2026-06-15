@@ -6,4 +6,5 @@ export type {
   SessionManager,
   SessionManagerDependencies,
   SessionManagerLogger,
+  SessionScreenshot,
 } from './SessionManager.js';

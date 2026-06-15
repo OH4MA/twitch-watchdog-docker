@@ -17,6 +17,7 @@ services:
       CONFIG_PATH: /app/config.yml
       TWITCH_CLIENT_ID: ${TWITCH_CLIENT_ID:-}
       TWITCH_ACCESS_TOKEN: ${TWITCH_ACCESS_TOKEN:-}
+      TWITCH_CLIENT_SECRET: ${TWITCH_CLIENT_SECRET:-}
       TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-false}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ALLOWED_CHAT_IDS: ${TELEGRAM_ALLOWED_CHAT_IDS:-}
@@ -24,7 +25,6 @@ services:
       - type: bind
         source: ./config.yml
         target: /app/config.yml
-        read_only: true
       - type: bind
         source: ./data/browser-state
         target: /data/browser-state

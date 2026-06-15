@@ -43,6 +43,7 @@ const CONFIG: AppConfig = Object.freeze({
   twitchApi: Object.freeze({
     clientId: 'test-client',
     accessToken: ACCESS_TOKEN,
+    clientSecret: '',
   }),
   browser: Object.freeze({
     navigationTimeoutMs: 30_000,
@@ -435,6 +436,7 @@ function createSessionManager(
     }),
     invalidate: vi.fn(async () => undefined),
     getActiveChannels: vi.fn(() => []),
+    captureScreenshot: vi.fn(async () => undefined),
   };
 }
 
@@ -452,6 +454,7 @@ function createScheduler(
       lifecycleEvents.push('scheduler.stop');
     }),
     runOnce: vi.fn(async () => undefined),
+    updateConfig: vi.fn(async () => undefined),
     getSnapshot: vi.fn(() => ({
       running: true,
       checkInFlight: false,

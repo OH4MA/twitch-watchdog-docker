@@ -8,16 +8,8 @@ headless: true
 storage_state_path: /data/browser-state/storage-state.json
 log_level: info
 
-twitch_api:
-  client_id: ${TWITCH_CLIENT_ID}
-  access_token: ${TWITCH_ACCESS_TOKEN}
-
 browser:
   navigation_timeout_ms: 30000
   page_health_check_interval_seconds: 30
   reward_check_interval_seconds: 15
   restart_on_crash: true
-
-telegram:
-  enabled: false
-  polling_timeout_seconds: 25

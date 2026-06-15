@@ -16,6 +16,7 @@ function createSession(
   options: {
     readonly onStart?: () => Promise<void>;
     readonly onStop?: (reason: string) => Promise<void>;
+    readonly screenshot?: Buffer;
   } = {},
 ): TestSession {
   return {
@@ -23,6 +24,14 @@ function createSession(
     secret: `session-secret-${channel}`,
     start: vi.fn(options.onStart ?? (async () => undefined)),
     stop: vi.fn(options.onStop ?? (async () => undefined)),
+    checkHealth: vi.fn(async () => ({ healthy: true, reason: 'live' })),
+    tickRewardClaim: vi.fn(async () => ({
+      status: 'not_found',
+      channel,
+      checkedAt: '2026-06-14T12:00:00.000Z',
+    })),
+    captureScreenshot: vi.fn(async () =>
+      options.screenshot ?? Buffer.from(`screenshot:${channel}`)),
   };
 }
 
@@ -121,6 +130,21 @@ describe('DefaultSessionManager', () => {
 
     expect(factory.create).toHaveBeenCalledTimes(2);
     expect(manager.getActiveChannels()).toEqual(['second', 'first']);
+  });
+
+  it('可擷取預設或指定中的 active session 截圖', async () => {
+    const manager = new DefaultSessionManager(createFactory());
+    await manager.reconcile(['first', 'second']);
+
+    await expect(manager.captureScreenshot()).resolves.toEqual({
+      channel: 'first',
+      image: Buffer.from('screenshot:first'),
+    });
+    await expect(manager.captureScreenshot('SECOND')).resolves.toEqual({
+      channel: 'second',
+      image: Buffer.from('screenshot:second'),
+    });
+    await expect(manager.captureScreenshot('missing')).resolves.toBeUndefined();
   });
 
   it('start failure 不留 registry，且不影響其他頻道啟動', async () => {

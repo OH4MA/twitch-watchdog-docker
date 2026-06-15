@@ -75,7 +75,8 @@ cat >"${SMOKE_STATE_DIR}/storage-state.json" <<'JSON'
 {"cookies":[],"origins":[]}
 JSON
 chmod 755 "${SMOKE_DIR}" "${SMOKE_STATE_DIR}"
-chmod 644 "${SMOKE_CONFIG_PATH}" "${SMOKE_STATE_DIR}/storage-state.json"
+chmod 666 "${SMOKE_CONFIG_PATH}"
+chmod 644 "${SMOKE_STATE_DIR}/storage-state.json"
 
 TWITCH_CLIENT_ID=docker-smoke-client-id \
 TWITCH_ACCESS_TOKEN=docker-smoke-access-token \
@@ -141,6 +142,7 @@ fi
 
 "${COMPOSE[@]}" up --detach --no-build
 wait_for_event_count service_started 1
+"${COMPOSE[@]}" exec -T twitch-watchdog test -w /app/config.yml
 
 "${COMPOSE[@]}" restart
 wait_for_event_count service_started 2

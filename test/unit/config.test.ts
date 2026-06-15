@@ -41,6 +41,7 @@ describe('YamlConfigLoader', () => {
       twitchApi: {
         clientId: 'fixture-client-id',
         accessToken: 'fixture-access-token',
+        clientSecret: '',
       },
       browser: {
         navigationTimeoutMs: 45_000,
@@ -86,6 +87,7 @@ twitch_api:
       twitchApi: {
         clientId: 'fixture-client-id',
         accessToken: 'fixture-access-token',
+        clientSecret: '',
       },
       browser: {
         navigationTimeoutMs: 30_000,
@@ -160,6 +162,7 @@ twitch_api:
     expect(config.twitchApi).toEqual({
       clientId: 'override-client-id',
       accessToken: 'override-access-token',
+      clientSecret: '',
     });
     expect(config.logLevel).toBe('warn');
     expect(config.headless).toBe(false);
@@ -173,7 +176,22 @@ twitch_api:
       }),
     ).rejects.toMatchObject({
       name: 'ConfigValidationError',
-      field: 'twitch_api.access_token',
+      field: 'twitch_api',
+    });
+  });
+
+  it('只有 Client ID 與 Client Secret 時允許啟動設定', async () => {
+    const config = await loadSource(`
+channels: [streamer]
+twitch_api:
+  client_id: fixture-client-id
+  client_secret: fixture-client-secret
+`);
+
+    expect(config.twitchApi).toEqual({
+      clientId: 'fixture-client-id',
+      accessToken: '',
+      clientSecret: 'fixture-client-secret',
     });
   });
 

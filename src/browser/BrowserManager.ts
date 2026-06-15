@@ -1,5 +1,5 @@
 import {
-  chromium,
+  firefox,
   type Browser,
   type BrowserContext,
   type Page,
@@ -34,7 +34,6 @@ export type BrowserManagerConfig = Pick<
 
 export interface BrowserLaunchOptions {
   readonly headless: boolean;
-  readonly chromiumSandbox: boolean;
 }
 
 export interface BrowserContextOptions {
@@ -131,7 +130,7 @@ interface RestartSchedule {
 
 export class PlaywrightBrowserLauncher implements BrowserLauncher {
   public async launch(options: BrowserLaunchOptions): Promise<BrowserAdapter> {
-    const browser = await chromium.launch(options);
+    const browser = await firefox.launch(options);
     return new PlaywrightBrowserAdapter(browser);
   }
 }
@@ -363,7 +362,6 @@ export class DefaultBrowserManager implements BrowserManager {
     try {
       browser = await this.launcher.launch({
         headless: this.config.headless,
-        chromiumSandbox: true,
       });
       const launchedBrowser = browser;
       unsubscribeBrowser = browser.onDisconnected(() => {

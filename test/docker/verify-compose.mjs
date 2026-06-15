@@ -29,7 +29,7 @@ assert(
     option.startsWith('seccomp=') &&
     option.endsWith('/seccomp_profile.json'),
   ),
-  '必須套用 Chromium seccomp profile',
+  '必須套用瀏覽器 seccomp profile',
 );
 assert(
   service.environment?.CONFIG_PATH === '/app/config.yml',
@@ -42,6 +42,10 @@ assert(
 assert(
   Object.hasOwn(service.environment ?? {}, 'TWITCH_ACCESS_TOKEN'),
   '缺少 TWITCH_ACCESS_TOKEN environment',
+);
+assert(
+  Object.hasOwn(service.environment ?? {}, 'TWITCH_CLIENT_SECRET'),
+  '缺少 TWITCH_CLIENT_SECRET environment',
 );
 assert(
   Object.hasOwn(service.environment ?? {}, 'TELEGRAM_ENABLED'),
@@ -62,7 +66,7 @@ assert(
 );
 
 const volumes = service.volumes ?? [];
-assertReadOnlyBind(volumes, '/app/config.yml');
+assertWritableBind(volumes, '/app/config.yml');
 assertReadOnlyBind(volumes, '/data/browser-state');
 
 if (mode === 'smoke') {
@@ -80,6 +84,13 @@ function assertReadOnlyBind(volumes, target) {
   assert(volume !== undefined, `缺少 ${target} volume`);
   assert(volume.type === 'bind', `${target} 必須是 bind mount`);
   assert(volume.read_only === true, `${target} 必須是唯讀掛載`);
+}
+
+function assertWritableBind(volumes, target) {
+  const volume = volumes.find((candidate) => candidate.target === target);
+  assert(volume !== undefined, `缺少 ${target} volume`);
+  assert(volume.type === 'bind', `${target} 必須是 bind mount`);
+  assert(volume.read_only !== true, `${target} 必須允許寫入`);
 }
 
 function assert(condition, message) {

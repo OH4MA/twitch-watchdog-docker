@@ -49,6 +49,28 @@ test.describe('RewardClaimer mock pages', () => {
     await expect(button).toHaveAttribute('data-click-count', '1');
   });
 
+  test('支援 BetterTTV 使用的 claimable bonus selector', async ({
+    page,
+  }) => {
+    await page.goto(mockPageUrl('reward-available.html'));
+    const button = page.locator(
+      '[data-test-selector="community-points-summary"] button',
+    );
+    await button.evaluate((element) => {
+      element.removeAttribute('data-test-selector');
+      element.className = 'claimable-bonus__icon';
+      element.setAttribute('aria-label', 'Bonus Channel Points');
+    });
+
+    const result = await new RewardClaimer().claimIfAvailable(
+      page,
+      'betterttv_selector_channel',
+    );
+
+    expect(result.status).toBe('claimed');
+    await expect(button).toHaveAttribute('data-click-count', '1');
+  });
+
   test('disabled 按鈕不會被點擊', async ({ page }) => {
     await page.goto(mockPageUrl('reward-disabled.html'));
     const button = page.locator(
@@ -73,6 +95,33 @@ test.describe('RewardClaimer mock pages', () => {
     );
 
     expect(result.status).toBe('not_found');
+  });
+
+  test('餘額選單按鈕不會被誤判為領取按鈕', async ({ page }) => {
+    await page.goto(mockPageUrl('reward-unavailable.html'));
+    const balanceButton = page.locator(
+      '[data-test-selector="community-points-summary"] button',
+    );
+    await page
+      .locator('[data-test-selector="community-points-summary"]')
+      .evaluate((summary) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('aria-label', 'Bits and Points Balances');
+        button.dataset.clickCount = '0';
+        button.addEventListener('click', () => {
+          button.dataset.clickCount = '1';
+        });
+        summary.append(button);
+      });
+
+    const result = await new RewardClaimer().claimIfAvailable(
+      page,
+      'balance_control_channel',
+    );
+
+    expect(result.status).toBe('not_found');
+    await expect(balanceButton).toHaveAttribute('data-click-count', '0');
   });
 
   test('真實 locator 點擊失敗時回傳 click_failed', async ({ page }) => {

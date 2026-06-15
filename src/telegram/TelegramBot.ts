@@ -1,5 +1,12 @@
-import type { RewardClaimResult } from '../browser/index.js';
-import type { AppConfig } from '../config/index.js';
+import type {
+  DropClaimResult,
+  RewardClaimResult,
+} from '../browser/index.js';
+import type {
+  AppConfig,
+  RuntimeConfigManager,
+} from '../config/index.js';
+import { ConfigValidationError } from '../config/index.js';
 import type { Logger } from '../logging/index.js';
 import type {
   StreamStatusChange,
@@ -8,6 +15,9 @@ import type {
 import type { SessionManager } from '../sessions/index.js';
 import type {
   TelegramApi,
+  TelegramBotCommand,
+  TelegramReplyKeyboardMarkup,
+  TelegramSendMessageOptions,
   TelegramUpdate,
 } from './TelegramApiClient.js';
 
@@ -16,6 +26,7 @@ export interface TelegramBot {
   stop(reason: string): Promise<void>;
   notifyStreamStatus(change: StreamStatusChange): Promise<void>;
   notifyReward(result: RewardClaimResult): Promise<void>;
+  notifyDrop(result: DropClaimResult): Promise<void>;
 }
 
 export interface TelegramBotOptions {
@@ -23,6 +34,7 @@ export interface TelegramBotOptions {
   readonly api: TelegramApi;
   readonly scheduler: WatchdogScheduler;
   readonly sessionManager: SessionManager;
+  readonly runtimeConfigManager: RuntimeConfigManager;
   readonly logger: Logger;
   readonly sleep?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
 }
@@ -69,7 +81,14 @@ export class DefaultTelegramBot implements TelegramBot {
 
     this.started = true;
     this.abortController = new AbortController();
-    await this.broadcast(this.formatServiceStarted());
+    try {
+      await this.options.api.setMyCommands(BOT_COMMANDS);
+    } catch {
+      this.options.logger.warn('telegram_command_menu_failed');
+    }
+    await this.broadcast(this.formatServiceStarted(), {
+      reply_markup: COMMAND_KEYBOARD,
+    });
     this.pollingFlight = this.poll(this.abortController.signal);
   }
 
@@ -103,6 +122,18 @@ export class DefaultTelegramBot implements TelegramBot {
     }
     if (result.status === 'click_failed') {
       return this.broadcast(`⚠️ ${result.channel} 忠誠點數領取失敗`);
+    }
+    return Promise.resolve();
+  }
+
+  public notifyDrop(result: DropClaimResult): Promise<void> {
+    if (result.status === 'claimed') {
+      return this.broadcast(
+        `🎁 已領取 ${result.claimedCount} 個 Twitch Drops`,
+      );
+    }
+    if (result.status === 'claim_failed') {
+      return this.broadcast('⚠️ Twitch Drops 領取失敗');
     }
     return Promise.resolve();
   }
@@ -159,22 +190,25 @@ export class DefaultTelegramBot implements TelegramBot {
       return;
     }
 
-    const command = parseCommand(message.text);
-    if (command === undefined) {
+    const parsed = parseCommand(message.text);
+    if (parsed === undefined) {
       return;
     }
 
-    await this.handleCommand(chatId, command);
+    await this.handleCommand(chatId, parsed.command, parsed.argument);
   }
 
   private async handleCommand(
     chatId: string,
     command: string,
+    argument: string | undefined,
   ): Promise<void> {
     switch (command) {
       case 'start':
       case 'help':
-        await this.options.api.sendMessage(chatId, HELP_TEXT);
+        await this.options.api.sendMessage(chatId, HELP_TEXT, {
+          reply_markup: COMMAND_KEYBOARD,
+        });
         return;
       case 'status':
         await this.options.api.sendMessage(chatId, this.formatStatus());
@@ -183,6 +217,36 @@ export class DefaultTelegramBot implements TelegramBot {
         await this.options.api.sendMessage(
           chatId,
           this.formatChannels(),
+        );
+        return;
+      case 'config':
+        await this.options.api.sendMessage(
+          chatId,
+          this.formatRuntimeConfig(),
+        );
+        return;
+      case 'channel_add':
+        await this.runConfigCommand(
+          chatId,
+          () => this.addChannel(chatId, argument),
+        );
+        return;
+      case 'channel_remove':
+        await this.runConfigCommand(
+          chatId,
+          () => this.removeChannel(chatId, argument),
+        );
+        return;
+      case 'channels_set':
+        await this.runConfigCommand(
+          chatId,
+          () => this.setChannels(chatId, argument),
+        );
+        return;
+      case 'max_streams':
+        await this.runConfigCommand(
+          chatId,
+          () => this.setMaxStreams(chatId, argument),
         );
         return;
       case 'check':
@@ -197,12 +261,180 @@ export class DefaultTelegramBot implements TelegramBot {
         this.options.scheduler.start();
         await this.options.api.sendMessage(chatId, '自動檢查已恢復。');
         return;
+      case 'screenshot':
+        await this.sendScreenshot(chatId, argument);
+        return;
       default:
         await this.options.api.sendMessage(
           chatId,
           `不支援的指令：/${command}\n\n${HELP_TEXT}`,
         );
     }
+  }
+
+  private async sendScreenshot(
+    chatId: string,
+    requestedChannel: string | undefined,
+  ): Promise<void> {
+    const screenshot = await this.options.sessionManager.captureScreenshot(
+      requestedChannel,
+    );
+    if (screenshot === undefined) {
+      const activeChannels = this.options.sessionManager.getActiveChannels();
+      await this.options.api.sendMessage(
+        chatId,
+        activeChannels.length === 0
+          ? '目前沒有正在觀看的頻道可供截圖。'
+          : [
+              `找不到正在觀看的頻道：${requestedChannel ?? ''}`,
+              `可用頻道：${activeChannels.join('、')}`,
+            ].join('\n'),
+      );
+      return;
+    }
+
+    await this.options.api.sendPhoto(
+      chatId,
+      screenshot.image,
+      `${screenshot.channel}.png`,
+      `${screenshot.channel} 目前瀏覽器畫面`,
+    );
+    this.options.logger.info('telegram_screenshot_sent', {
+      chatId,
+      channel: screenshot.channel,
+      bytes: screenshot.image.byteLength,
+    });
+  }
+
+  private async addChannel(
+    chatId: string,
+    argument: string | undefined,
+  ): Promise<void> {
+    if (argument === undefined) {
+      await this.options.api.sendMessage(
+        chatId,
+        '用法：/channel_add 頻道名稱',
+      );
+      return;
+    }
+    const current = this.options.runtimeConfigManager.getConfig();
+    if (
+      current.channels.some(
+        (channel) =>
+          channel.toLocaleLowerCase('en-US') ===
+          argument.toLocaleLowerCase('en-US'),
+      )
+    ) {
+      await this.options.api.sendMessage(
+        chatId,
+        `頻道已在監控清單中：${argument}`,
+      );
+      return;
+    }
+    const updated = await this.options.runtimeConfigManager.setChannels([
+      ...current.channels,
+      argument,
+    ]);
+    await this.options.api.sendMessage(
+      chatId,
+      `已加入頻道：${argument}\n${formatRuntimeConfig(updated)}`,
+    );
+  }
+
+  private async runConfigCommand(
+    chatId: string,
+    operation: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await operation();
+    } catch (error: unknown) {
+      this.options.logger.warn('telegram_config_update_failed', {
+        errorType:
+          error instanceof Error ? error.name : 'UnknownError',
+      });
+      await this.options.api.sendMessage(
+        chatId,
+        error instanceof ConfigValidationError
+          ? error.message
+          : '設定更新失敗，請確認 config.yml 可寫入。',
+      );
+    }
+  }
+
+  private async removeChannel(
+    chatId: string,
+    argument: string | undefined,
+  ): Promise<void> {
+    if (argument === undefined) {
+      await this.options.api.sendMessage(
+        chatId,
+        '用法：/channel_remove 頻道名稱',
+      );
+      return;
+    }
+    const current = this.options.runtimeConfigManager.getConfig();
+    const normalized = argument.toLocaleLowerCase('en-US');
+    const channels = current.channels.filter(
+      (channel) =>
+        channel.toLocaleLowerCase('en-US') !== normalized,
+    );
+    if (channels.length === current.channels.length) {
+      await this.options.api.sendMessage(
+        chatId,
+        `找不到監控頻道：${argument}`,
+      );
+      return;
+    }
+    const updated =
+      await this.options.runtimeConfigManager.setChannels(channels);
+    await this.options.api.sendMessage(
+      chatId,
+      `已移除頻道：${argument}\n${formatRuntimeConfig(updated)}`,
+    );
+  }
+
+  private async setChannels(
+    chatId: string,
+    argument: string | undefined,
+  ): Promise<void> {
+    const channels = parseChannelsArgument(argument);
+    if (channels.length === 0) {
+      await this.options.api.sendMessage(
+        chatId,
+        '用法：/channels_set 頻道一,頻道二',
+      );
+      return;
+    }
+    const updated =
+      await this.options.runtimeConfigManager.setChannels(channels);
+    await this.options.api.sendMessage(
+      chatId,
+      `頻道清單已更新\n${formatRuntimeConfig(updated)}`,
+    );
+  }
+
+  private async setMaxStreams(
+    chatId: string,
+    argument: string | undefined,
+  ): Promise<void> {
+    const value = Number(argument);
+    if (
+      argument === undefined ||
+      !/^\d+$/u.test(argument) ||
+      !Number.isSafeInteger(value)
+    ) {
+      await this.options.api.sendMessage(
+        chatId,
+        '用法：/max_streams 正整數',
+      );
+      return;
+    }
+    const updated =
+      await this.options.runtimeConfigManager.setMaxConcurrentStreams(value);
+    await this.options.api.sendMessage(
+      chatId,
+      `最大同時觀看已更新為 ${value}\n${formatRuntimeConfig(updated)}`,
+    );
   }
 
   private formatServiceStarted(): string {
@@ -244,10 +476,19 @@ export class DefaultTelegramBot implements TelegramBot {
       .join('\n');
   }
 
-  private async broadcast(text: string): Promise<void> {
+  private formatRuntimeConfig(): string {
+    return formatRuntimeConfig(
+      this.options.runtimeConfigManager.getConfig(),
+    );
+  }
+
+  private async broadcast(
+    text: string,
+    options?: TelegramSendMessageOptions,
+  ): Promise<void> {
     for (const chatId of this.allowedChatIds) {
       try {
-        await this.options.api.sendMessage(chatId, text);
+        await this.options.api.sendMessage(chatId, text, options);
       } catch {
         this.options.logger.warn('telegram_send_failed', { chatId });
       }
@@ -259,20 +500,91 @@ const HELP_TEXT = [
   '可用指令：',
   '/status - 顯示服務與觀看狀態',
   '/channels - 顯示監控頻道',
+  '/config - 顯示可調整的設定',
+  '/channel_add 頻道 - 新增監控頻道',
+  '/channel_remove 頻道 - 移除監控頻道',
+  '/channels_set 頻道一,頻道二 - 取代頻道清單',
+  '/max_streams 數量 - 設定最大同時觀看',
   '/check - 立即檢查一次',
   '/pause - 暫停自動檢查',
   '/resume - 恢復自動檢查',
+  '/screenshot [頻道] - 回傳目前瀏覽器畫面',
   '/help - 顯示說明',
 ].join('\n');
 
-function parseCommand(text: string): string | undefined {
-  const firstToken = text.trim().split(/\s+/u)[0];
+const BOT_COMMANDS: readonly TelegramBotCommand[] = Object.freeze([
+  { command: 'status', description: '顯示服務與觀看狀態' },
+  { command: 'channels', description: '顯示監控頻道' },
+  { command: 'config', description: '顯示頻道與同時觀看設定' },
+  { command: 'channel_add', description: '新增監控頻道' },
+  { command: 'channel_remove', description: '移除監控頻道' },
+  { command: 'channels_set', description: '取代監控頻道清單' },
+  { command: 'max_streams', description: '設定最大同時觀看' },
+  { command: 'check', description: '立即檢查一次' },
+  { command: 'pause', description: '暫停自動檢查' },
+  { command: 'resume', description: '恢復自動檢查' },
+  { command: 'screenshot', description: '擷取目前觀看畫面' },
+  { command: 'help', description: '顯示指令說明' },
+]);
+
+const COMMAND_KEYBOARD: TelegramReplyKeyboardMarkup = Object.freeze({
+  keyboard: [
+    [{ text: '/status' }, { text: '/channels' }],
+    [{ text: '/config' }],
+    [{ text: '/check' }, { text: '/screenshot' }],
+    [{ text: '/pause' }, { text: '/resume' }],
+    [{ text: '/help' }],
+  ],
+  is_persistent: true,
+  resize_keyboard: true,
+});
+
+interface ParsedCommand {
+  readonly command: string;
+  readonly argument?: string;
+}
+
+function parseCommand(text: string): ParsedCommand | undefined {
+  const trimmed = text.trim();
+  const separatorIndex = trimmed.search(/\s/u);
+  const firstToken =
+    separatorIndex === -1 ? trimmed : trimmed.slice(0, separatorIndex);
+  const argument =
+    separatorIndex === -1
+      ? undefined
+      : trimmed.slice(separatorIndex).trim() || undefined;
   if (firstToken === undefined || !firstToken.startsWith('/')) {
     return undefined;
   }
-  return firstToken.slice(1).split('@', 1)[0]?.toLocaleLowerCase('en-US');
+  const command = firstToken
+    .slice(1)
+    .split('@', 1)[0]
+    ?.toLocaleLowerCase('en-US');
+  if (command === undefined || command === '') {
+    return undefined;
+  }
+  return {
+    command,
+    ...(argument === undefined ? {} : { argument }),
+  };
 }
 
 function formatList(values: readonly string[]): string {
   return values.length === 0 ? '無' : values.join('、');
+}
+
+function parseChannelsArgument(argument: string | undefined): string[] {
+  return argument === undefined
+    ? []
+    : argument.split(/[\s,]+/u).filter((channel) => channel !== '');
+}
+
+function formatRuntimeConfig(config: {
+  readonly channels: readonly string[];
+  readonly maxConcurrentStreams: number;
+}): string {
+  return [
+    `監控頻道：${config.channels.join('、')}`,
+    `最大同時觀看：${config.maxConcurrentStreams}`,
+  ].join('\n');
 }

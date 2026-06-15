@@ -15,12 +15,117 @@ import {
 const FIXED_TIME = new Date('2026-06-14T12:00:00.000Z');
 const CLIENT_ID = 'fixture-client-id';
 const ACCESS_TOKEN = 'fixture-access-token';
+const CLIENT_SECRET = 'fixture-client-secret';
 
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe('TwitchApiClient', () => {
+  it('沒有初始 token 時先用 Client Secret 取得 token 再查詢', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({
+        access_token: 'initial-app-token',
+        expires_in: 5_000_000,
+        token_type: 'bearer',
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const client = createClient({
+      fetch: fetchMock,
+      accessToken: '',
+      clientSecret: CLIENT_SECRET,
+    });
+
+    await client.getLiveStatuses(['streamer']);
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/oauth2/token');
+    const helixHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers);
+    expect(helixHeaders.get('Authorization')).toBe(
+      'Bearer initial-app-token',
+    );
+  });
+
+  it('有 client secret 時每小時驗證有效 token，未近到期不換發', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({
+        client_id: CLIENT_ID,
+        expires_in: 100_000,
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const client = createClient({
+      fetch: fetchMock,
+      clientSecret: CLIENT_SECRET,
+    });
+
+    await client.getLiveStatuses(['streamer']);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/oauth2/validate');
+    const validationHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers);
+    expect(validationHeaders.get('Authorization')).toBe(
+      `OAuth ${ACCESS_TOKEN}`,
+    );
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/helix/streams');
+  });
+
+  it('token 剩餘少於一天時自動換發後使用新 token 查詢', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({
+        client_id: CLIENT_ID,
+        expires_in: 3_600,
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        access_token: 'new-app-token',
+        expires_in: 5_000_000,
+        token_type: 'bearer',
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const client = createClient({
+      fetch: fetchMock,
+      clientSecret: CLIENT_SECRET,
+    });
+
+    await client.getLiveStatuses(['streamer']);
+
+    const tokenRequest = fetchMock.mock.calls[1];
+    expect(String(tokenRequest?.[0])).toContain('/oauth2/token');
+    expect(tokenRequest?.[1]?.method).toBe('POST');
+    expect(String(tokenRequest?.[1]?.body)).toContain(
+      `client_secret=${CLIENT_SECRET}`,
+    );
+    const helixHeaders = new Headers(fetchMock.mock.calls[2]?.[1]?.headers);
+    expect(helixHeaders.get('Authorization')).toBe('Bearer new-app-token');
+  });
+
+  it('Helix 回傳 401 時換發 token 並只重試一次', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({
+        client_id: CLIENT_ID,
+        expires_in: 100_000,
+      }))
+      .mockResolvedValueOnce(new Response(null, { status: 401 }))
+      .mockResolvedValueOnce(jsonResponse({
+        access_token: 'recovered-token',
+        expires_in: 5_000_000,
+        token_type: 'bearer',
+      }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] }));
+    const client = createClient({
+      fetch: fetchMock,
+      clientSecret: CLIENT_SECRET,
+    });
+
+    await expect(
+      client.getLiveStatuses(['streamer']),
+    ).resolves.toHaveLength(1);
+
+    const retryHeaders = new Headers(fetchMock.mock.calls[3]?.[1]?.headers);
+    expect(retryHeaders.get('Authorization')).toBe(
+      'Bearer recovered-token',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it('使用 URLSearchParams 與必要 headers 查詢多頻道並轉換部分 live', async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({

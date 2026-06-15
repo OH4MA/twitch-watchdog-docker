@@ -1,13 +1,16 @@
 import {
   DefaultBrowserManager,
   DefaultChannelSessionFactory,
+  DropClaimer,
   RewardClaimer,
 } from '../browser/index.js';
 import {
   DEFAULT_CONFIG_PATH,
+  YamlRuntimeConfigManager,
   YamlConfigLoader,
   type AppConfig,
   type ConfigLoader,
+  type RuntimeWatchConfig,
 } from '../config/index.js';
 import {
   FileCredentialValidator,
@@ -50,12 +53,13 @@ export function createApplication(
   options: CreateApplicationOptions = {},
 ): AppRunner {
   const env = options.env ?? process.env;
+  const configPath =
+    options.configPath ?? env.CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
   const bootstrapLogger =
     options.bootstrapLogger ?? createLogger({ level: 'info' });
 
   return new DefaultAppRunner({
-    configPath:
-      options.configPath ?? env.CONFIG_PATH ?? DEFAULT_CONFIG_PATH,
+    configPath,
     env,
     configLoader:
       options.configLoader ?? new YamlConfigLoader(bootstrapLogger),
@@ -65,17 +69,25 @@ export function createApplication(
     loggerFactory:
       options.loggerFactory ??
       ((config) => createLogger({ level: config.logLevel })),
-    runtimeFactory: options.runtimeFactory ?? createDefaultRuntime,
+    runtimeFactory:
+      options.runtimeFactory ??
+      ((config, logger) =>
+        createDefaultRuntime(config, logger, configPath)),
   });
 }
 
 export function createDefaultRuntime(
   config: AppConfig,
   logger: Logger,
+  configPath = process.env.CONFIG_PATH ?? DEFAULT_CONFIG_PATH,
 ): ApplicationRuntime {
   const sessionManagerReference: {
     current?: DefaultSessionManager;
   } = {};
+  let runtimeWatchConfig: RuntimeWatchConfig = {
+    channels: config.channels,
+    maxConcurrentStreams: config.maxConcurrentStreams,
+  };
   let telegramBot: TelegramBot | undefined;
 
   const browserManager = new DefaultBrowserManager(config, {
@@ -90,10 +102,20 @@ export function createDefaultRuntime(
     logger,
     onResult: (result) => telegramBot?.notifyReward(result),
   });
+  const dropClaimer = new DropClaimer({
+    logger,
+    onResult: (result) => telegramBot?.notifyDrop(result),
+  });
   const sessionFactory = new DefaultChannelSessionFactory({
-    config,
+    config: {
+      get channels() {
+        return runtimeWatchConfig.channels;
+      },
+      browser: config.browser,
+    },
     browserManager,
     rewardClaimer,
+    dropClaimer,
     logger,
     onInvalidated: (channel, reason) =>
       sessionManagerReference.current?.invalidate(channel, reason),
@@ -107,6 +129,7 @@ export function createDefaultRuntime(
   const liveStatusProvider = new TwitchApiClient({
     clientId: config.twitchApi.clientId,
     accessToken: config.twitchApi.accessToken,
+    clientSecret: config.twitchApi.clientSecret,
     checkIntervalSeconds: config.checkIntervalSeconds,
     logger,
   });
@@ -119,6 +142,16 @@ export function createDefaultRuntime(
     onStreamStatusChanged: (change) =>
       telegramBot?.notifyStreamStatus(change),
   });
+  const runtimeConfigManager = new YamlRuntimeConfigManager({
+    configPath,
+    initialConfig: config,
+    target: {
+      async updateConfig(nextConfig) {
+        runtimeWatchConfig = nextConfig;
+        await scheduler.updateConfig(nextConfig);
+      },
+    },
+  });
   const integrations = config.telegram.enabled
     ? [
         (telegramBot = new DefaultTelegramBot({
@@ -128,6 +161,7 @@ export function createDefaultRuntime(
           }),
           scheduler,
           sessionManager,
+          runtimeConfigManager,
           logger,
         })),
       ]

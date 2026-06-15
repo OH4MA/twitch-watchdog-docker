@@ -6,7 +6,7 @@ import {
 } from '../../src/telegram/index.js';
 
 describe('TelegramApiClient', () => {
-  it('以 POST JSON 呼叫 getUpdates 與 sendMessage', async () => {
+  it('以 POST JSON 呼叫 getUpdates、setMyCommands 與 sendMessage', async () => {
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
@@ -15,6 +15,14 @@ describe('TelegramApiClient', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         ok: true,
         result: { message_id: 9 },
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: { message_id: 10 },
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ok: true,
+        result: true,
       })));
     const client = new TelegramApiClient({
       botToken: 'test-bot-token',
@@ -25,7 +33,21 @@ describe('TelegramApiClient', () => {
     await expect(
       client.getUpdates(5, 25, controller.signal),
     ).resolves.toEqual([{ update_id: 7 }]);
-    await client.sendMessage('-100123', 'hello');
+    await client.setMyCommands([
+      { command: 'status', description: '顯示狀態' },
+    ]);
+    await client.sendMessage('-100123', 'hello', {
+      reply_markup: {
+        keyboard: [[{ text: '/status' }]],
+        resize_keyboard: true,
+      },
+    });
+    await client.sendPhoto(
+      '-100123',
+      Buffer.from('png-image'),
+      'channel.png',
+      'channel screenshot',
+    );
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -42,14 +64,48 @@ describe('TelegramApiClient', () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
+      'https://api.telegram.org/bottest-bot-token/setMyCommands',
+      expect.objectContaining({
+        body: JSON.stringify({
+          commands: [
+            { command: 'status', description: '顯示狀態' },
+          ],
+        }),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
       'https://api.telegram.org/bottest-bot-token/sendMessage',
       expect.objectContaining({
         body: JSON.stringify({
           chat_id: '-100123',
           text: 'hello',
+          reply_markup: {
+            keyboard: [[{ text: '/status' }]],
+            resize_keyboard: true,
+          },
         }),
       }),
     );
+    const fourthCall = fetchMock.mock.calls[3];
+    expect(fourthCall?.[0]).toBe(
+      'https://api.telegram.org/bottest-bot-token/sendPhoto',
+    );
+    expect(fourthCall?.[1]).toEqual(expect.objectContaining({
+      method: 'POST',
+      redirect: 'error',
+    }));
+    const form = fourthCall?.[1]?.body;
+    expect(form).toBeInstanceOf(FormData);
+    if (!(form instanceof FormData)) {
+      throw new Error('預期 sendPhoto 使用 FormData');
+    }
+    expect(form.get('chat_id')).toBe('-100123');
+    expect(form.get('caption')).toBe('channel screenshot');
+    const photo = form.get('photo');
+    expect(photo).toBeInstanceOf(Blob);
+    expect((photo as File).name).toBe('channel.png');
+    expect((photo as Blob).type).toBe('image/png');
   });
 
   it('網路錯誤不包含 bot token 或完整 URL', async () => {

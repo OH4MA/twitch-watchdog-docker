@@ -230,16 +230,31 @@ function buildTwitchApi(
   const twitchApi = value === undefined
     ? {}
     : requireRecord(value, 'twitch_api');
+  const accessToken = resolveOptionalStringOverride(
+    env.TWITCH_ACCESS_TOKEN,
+    twitchApi.access_token,
+    'twitch_api.access_token',
+  );
+  const clientSecret = resolveOptionalStringOverride(
+    env.TWITCH_CLIENT_SECRET,
+    twitchApi.client_secret,
+    'twitch_api.client_secret',
+  );
+
+  if (accessToken === '' && clientSecret === '') {
+    throw new ConfigValidationError(
+      'twitch_api',
+      'access_token 與 client_secret 至少需要一個',
+    );
+  }
 
   return {
     clientId: requireNonEmptyString(
       env.TWITCH_CLIENT_ID ?? twitchApi.client_id,
       'twitch_api.client_id',
     ),
-    accessToken: requireNonEmptyString(
-      env.TWITCH_ACCESS_TOKEN ?? twitchApi.access_token,
-      'twitch_api.access_token',
-    ),
+    accessToken,
+    clientSecret,
   };
 }
 

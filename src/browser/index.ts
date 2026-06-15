@@ -33,6 +33,14 @@ export {
   type DefaultChannelSessionOptions,
 } from './ChannelSession.js';
 export {
+  DROP_CLAIM_CHECK_INTERVAL_MS,
+  DropClaimer,
+  type DropClaimObserver,
+  type DropClaimResult,
+  type DropClaimerLogger,
+  type DropClaimerOptions,
+} from './DropClaimer.js';
+export {
   COMMUNITY_POINTS_CLAIM_BUTTON_SELECTOR,
   COMMUNITY_POINTS_SUMMARY_SELECTOR,
   REWARD_BUTTON_LIKE_SELECTOR,

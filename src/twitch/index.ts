@@ -1,6 +1,7 @@
 export {
   TWITCH_HELIX_BASE_URL,
   TWITCH_HELIX_MAX_USER_LOGINS,
+  TWITCH_OAUTH_BASE_URL,
   TwitchApiClient,
   type TwitchApiClientOptions,
 } from './TwitchApiClient.js';

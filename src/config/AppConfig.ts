@@ -5,6 +5,7 @@ export type LogLevel = (typeof LOG_LEVELS)[number];
 export interface TwitchApiConfig {
   readonly clientId: string;
   readonly accessToken: string;
+  readonly clientSecret: string;
 }
 
 export interface BrowserConfig {

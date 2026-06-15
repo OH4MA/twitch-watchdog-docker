@@ -179,10 +179,20 @@ describe('FileCredentialValidator', () => {
       twitchApi: {
         clientId: 'fixture-client-id',
         accessToken: '',
+        clientSecret: '',
+      },
+    });
+    const secretOnly = await validator.validate({
+      ...createConfig('/state.json'),
+      twitchApi: {
+        clientId: 'fixture-client-id',
+        accessToken: '',
+        clientSecret: 'fixture-client-secret',
       },
     });
 
     expect(configured.twitchApiConfigured).toBe(true);
+    expect(secretOnly.twitchApiConfigured).toBe(true);
     expect(missing.twitchApiConfigured).toBe(false);
   });
 
@@ -256,6 +266,7 @@ function createConfig(
     twitchApi: {
       clientId: 'fixture-client-id',
       accessToken,
+      clientSecret: '',
     },
     browser: {
       navigationTimeoutMs: 30_000,

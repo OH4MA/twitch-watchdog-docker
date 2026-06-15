@@ -2,6 +2,7 @@ import type { Locator, Page } from 'playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { BrowserManager } from '../../src/browser/BrowserManager.js';
+import type { DropClaimer } from '../../src/browser/DropClaimer.js';
 import {
   CHANNEL_HEALTH_SELECTORS,
   DefaultChannelSession,
@@ -29,6 +30,7 @@ interface MockPageControls {
   readonly setDefaultNavigationTimeout: ReturnType<typeof vi.fn>;
   readonly goto: ReturnType<typeof vi.fn>;
   readonly reload: ReturnType<typeof vi.fn>;
+  readonly screenshot: ReturnType<typeof vi.fn>;
   setMarker(marker: HealthMarker | undefined): void;
   setUrl(url: string): void;
   setClosed(closed: boolean): void;
@@ -94,11 +96,13 @@ function createMockPage(input: {
     }
     return null;
   });
+  const screenshot = vi.fn(async () => Buffer.from('png-image'));
 
   const page = {
     setDefaultNavigationTimeout,
     goto,
     reload,
+    screenshot,
     url: () => currentUrl,
     isClosed: () => closed,
     locator,
@@ -109,6 +113,7 @@ function createMockPage(input: {
     setDefaultNavigationTimeout,
     goto,
     reload,
+    screenshot,
     setMarker(value): void {
       marker = value;
     },
@@ -317,6 +322,31 @@ describe('DefaultChannelSession', () => {
     await session.stop('test_complete');
   });
 
+  it('觀看中可直接從現有 page 擷取 viewport PNG', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+    });
+    await session.start();
+
+    await expect(session.captureScreenshot()).resolves.toEqual(
+      Buffer.from('png-image'),
+    );
+    expect(mockPage.screenshot).toHaveBeenCalledWith({
+      type: 'png',
+      fullPage: false,
+    });
+
+    await session.stop('test_complete');
+    await expect(session.captureScreenshot()).rejects.toThrow(
+      '頻道頁面目前無法截圖',
+    );
+  });
+
   it.each([
     ['loginRequired', 'login_required'],
     ['error', 'error_page'],
@@ -444,6 +474,43 @@ describe('DefaultChannelSession', () => {
     });
     expect(session.state).toBe('watching');
     expect(browser.closePage).not.toHaveBeenCalled();
+
+    await session.stop('test_complete');
+  });
+
+  it('同一 reward tick 會檢查 Drops，失敗不影響忠誠點數結果', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer(async (_page, channel) => ({
+      status: 'claimed',
+      channel,
+      claimedAt: NOW.toISOString(),
+    }));
+    const claimDrops = vi.fn(async () => {
+      throw new Error('drop query failed');
+    });
+    const logs = createLogger();
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      dropClaimer: {
+        claimIfAvailable: claimDrops,
+      } satisfies Pick<DropClaimer, 'claimIfAvailable'>,
+      logger: logs.logger,
+    });
+    await session.start();
+
+    await expect(session.tickRewardClaim()).resolves.toMatchObject({
+      status: 'claimed',
+    });
+    expect(claimDrops).toHaveBeenCalledWith(mockPage.page);
+    expect(logs.warn).toHaveBeenCalledWith(
+      'drop_claim_unexpected_failure',
+      expect.objectContaining({ channel: CHANNEL }),
+    );
+    expect(session.state).toBe('watching');
 
     await session.stop('test_complete');
   });

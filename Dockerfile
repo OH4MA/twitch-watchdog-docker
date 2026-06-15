@@ -34,6 +34,9 @@ FROM base AS production
 
 ENV NODE_ENV=production
 ENV CONFIG_PATH=/app/config.yml
+ENV HOME=/tmp
+ENV XDG_CONFIG_HOME=/tmp/.config
+ENV XDG_CACHE_HOME=/tmp/.cache
 
 COPY --chown=pwuser:pwuser --from=production-dependencies /app/package.json ./package.json
 COPY --chown=pwuser:pwuser --from=production-dependencies /app/package-lock.json ./package-lock.json

@@ -1,4 +1,5 @@
 import type { AppConfig } from '../config/index.js';
+import type { RuntimeWatchConfig } from '../config/index.js';
 import { LOG_EVENTS, type Logger } from '../logging/index.js';
 import {
   TwitchApiAuthError,
@@ -15,6 +16,7 @@ export interface WatchdogScheduler {
   stop(): Promise<void>;
   runOnce(): Promise<void>;
   getSnapshot(): WatchdogSchedulerSnapshot;
+  updateConfig(config: RuntimeWatchConfig): Promise<void>;
 }
 
 export interface WatchdogSchedulerSnapshot {
@@ -80,12 +82,14 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
   private retryAt: Date | undefined;
   private lastCheckedAt: Date | undefined;
   private started = false;
+  private runtimeConfig: RuntimeWatchConfig;
 
   public constructor(
     private readonly options: DefaultWatchdogSchedulerOptions,
   ) {
     this.timer = options.timer ?? DEFAULT_TIMER;
     this.now = options.now ?? (() => new Date());
+    this.runtimeConfig = freezeRuntimeConfig(options.config);
   }
 
   public start(): void {
@@ -153,13 +157,44 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
       ...(this.lastCheckedAt === undefined
         ? {}
         : { lastCheckedAt: this.lastCheckedAt.toISOString() }),
-      channels: this.options.config.channels.map((channel) => {
+      channels: this.runtimeConfig.channels.map((channel) => {
         const isLive = this.previousLiveStatuses.get(
           normalizeChannel(channel),
         );
         return isLive === undefined ? { channel } : { channel, isLive };
       }),
     };
+  }
+
+  public async updateConfig(config: RuntimeWatchConfig): Promise<void> {
+    await this.inFlight;
+    this.runtimeConfig = freezeRuntimeConfig(config);
+
+    const configured = new Set(
+      this.runtimeConfig.channels.map((channel) => normalizeChannel(channel)),
+    );
+    for (const channel of [...this.previousLiveStatuses.keys()]) {
+      if (!configured.has(channel)) {
+        this.previousLiveStatuses.delete(channel);
+      }
+    }
+
+    const knownStatuses: ChannelLiveStatus[] =
+      this.runtimeConfig.channels.map((channel) => ({
+        channel,
+        isLive:
+          this.previousLiveStatuses.get(normalizeChannel(channel)) === true,
+        checkedAt:
+          this.lastCheckedAt?.toISOString() ?? this.now().toISOString(),
+      }));
+    const activeChannels =
+      this.options.streamSelector.selectActiveChannels({
+        configuredChannels: this.runtimeConfig.channels,
+        liveStatuses: knownStatuses,
+        maxConcurrentStreams: this.runtimeConfig.maxConcurrentStreams,
+      });
+    await this.options.sessionManager.reconcile(activeChannels);
+    await this.runOnce();
   }
 
   private triggerTick(): void {
@@ -176,7 +211,7 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
     try {
       liveStatuses =
         await this.options.liveStatusProvider.getLiveStatuses(
-          this.options.config.channels,
+          this.runtimeConfig.channels,
         );
     } catch (error: unknown) {
       this.handleApiError(error);
@@ -199,10 +234,10 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
 
     const activeChannels =
       this.options.streamSelector.selectActiveChannels({
-        configuredChannels: this.options.config.channels,
+        configuredChannels: this.runtimeConfig.channels,
         liveStatuses,
         maxConcurrentStreams:
-          this.options.config.maxConcurrentStreams,
+          this.runtimeConfig.maxConcurrentStreams,
       });
 
     await this.options.sessionManager.reconcile(activeChannels);
@@ -276,7 +311,7 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
       );
     }
 
-    for (const channel of this.options.config.channels) {
+    for (const channel of this.runtimeConfig.channels) {
       if (!statusesByChannel.has(normalizeChannel(channel))) {
         return undefined;
       }
@@ -289,7 +324,7 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
     currentLiveStatuses: ReadonlyMap<string, boolean>,
   ): void {
     const loggedChannels = new Set<string>();
-    for (const channel of this.options.config.channels) {
+    for (const channel of this.runtimeConfig.channels) {
       const normalizedChannel = normalizeChannel(channel);
       if (loggedChannels.has(normalizedChannel)) {
         continue;
@@ -342,4 +377,13 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
 
 function normalizeChannel(channel: string): string {
   return channel.toLocaleLowerCase('en-US');
+}
+
+function freezeRuntimeConfig(
+  config: RuntimeWatchConfig,
+): RuntimeWatchConfig {
+  return Object.freeze({
+    channels: Object.freeze([...config.channels]),
+    maxConcurrentStreams: config.maxConcurrentStreams,
+  });
 }

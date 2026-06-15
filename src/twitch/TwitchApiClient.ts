@@ -12,20 +12,27 @@ import {
 
 export const TWITCH_HELIX_BASE_URL = 'https://api.twitch.tv/helix/';
 export const TWITCH_HELIX_MAX_USER_LOGINS = 100;
+export const TWITCH_OAUTH_BASE_URL = 'https://id.twitch.tv/oauth2/';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_TOKEN_VALIDATION_INTERVAL_MS = 60 * 60 * 1_000;
+const DEFAULT_TOKEN_REFRESH_THRESHOLD_SECONDS = 24 * 60 * 60;
 const MAX_RATE_LIMIT_FALLBACK_MS = 5 * 60 * 1_000;
 const MAX_RESPONSE_BODY_BYTES = 1_000_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export interface TwitchApiClientOptions {
   readonly clientId: string;
-  readonly accessToken: string;
+  readonly accessToken?: string;
+  readonly clientSecret?: string;
   readonly checkIntervalSeconds: number;
   readonly logger: Logger;
   readonly fetch?: typeof fetch;
   readonly baseUrl?: string;
+  readonly oauthBaseUrl?: string;
   readonly requestTimeoutMs?: number;
+  readonly tokenValidationIntervalMs?: number;
+  readonly tokenRefreshThresholdSeconds?: number;
   readonly now?: () => Date;
 }
 
@@ -44,10 +51,25 @@ export class TwitchApiClient implements LiveStatusProvider {
   private readonly fetchFunction: typeof fetch;
   private readonly requestTimeoutMs: number;
   private readonly now: () => Date;
+  private readonly validateEndpoint: URL;
+  private readonly tokenEndpoint: URL;
+  private readonly tokenValidationIntervalMs: number;
+  private readonly tokenRefreshThresholdSeconds: number;
+  private accessToken: string;
+  private lastValidatedAt: number | undefined;
+  private tokenMaintenanceFlight: Promise<void> | undefined;
 
   constructor(private readonly options: TwitchApiClientOptions) {
     requireNonEmpty(options.clientId, 'clientId');
-    requireNonEmpty(options.accessToken, 'accessToken');
+    if (options.clientSecret !== undefined && options.clientSecret !== '') {
+      requireNonEmpty(options.clientSecret, 'clientSecret');
+    }
+    if (
+      (options.accessToken ?? '') === '' &&
+      (options.clientSecret ?? '') === ''
+    ) {
+      throw new TypeError('accessToken or clientSecret is required');
+    }
     requirePositiveFinite(
       options.checkIntervalSeconds,
       'checkIntervalSeconds',
@@ -67,9 +89,30 @@ export class TwitchApiClient implements LiveStatusProvider {
       'streams',
       baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`,
     );
+    const oauthBaseUrl = options.oauthBaseUrl ?? TWITCH_OAUTH_BASE_URL;
+    const normalizedOauthBaseUrl = oauthBaseUrl.endsWith('/')
+      ? oauthBaseUrl
+      : `${oauthBaseUrl}/`;
+    this.validateEndpoint = new URL('validate', normalizedOauthBaseUrl);
+    this.tokenEndpoint = new URL('token', normalizedOauthBaseUrl);
     this.fetchFunction = options.fetch ?? globalThis.fetch;
     this.requestTimeoutMs = requestTimeoutMs;
     this.now = options.now ?? (() => new Date());
+    this.tokenValidationIntervalMs =
+      options.tokenValidationIntervalMs ??
+      DEFAULT_TOKEN_VALIDATION_INTERVAL_MS;
+    this.tokenRefreshThresholdSeconds =
+      options.tokenRefreshThresholdSeconds ??
+      DEFAULT_TOKEN_REFRESH_THRESHOLD_SECONDS;
+    requirePositiveFinite(
+      this.tokenValidationIntervalMs,
+      'tokenValidationIntervalMs',
+    );
+    requirePositiveFinite(
+      this.tokenRefreshThresholdSeconds,
+      'tokenRefreshThresholdSeconds',
+    );
+    this.accessToken = options.accessToken ?? '';
   }
 
   async getLiveStatuses(
@@ -124,6 +167,14 @@ export class TwitchApiClient implements LiveStatusProvider {
   private async requestStreams(
     channels: readonly string[],
   ): Promise<HelixStream[]> {
+    await this.maintainToken(false);
+    return this.requestStreamsAttempt(channels, true);
+  }
+
+  private async requestStreamsAttempt(
+    channels: readonly string[],
+    allowAuthRetry: boolean,
+  ): Promise<HelixStream[]> {
     const url = new URL(this.endpoint);
     const searchParams = new URLSearchParams();
     for (const channel of channels) {
@@ -136,6 +187,11 @@ export class TwitchApiClient implements LiveStatusProvider {
 
     try {
       if (response.status === 401 || response.status === 403) {
+        if (response.status === 401 && allowAuthRetry && this.canRefresh()) {
+          request.finish();
+          await this.maintainToken(true);
+          return this.requestStreamsAttempt(channels, false);
+        }
         const error = new TwitchApiAuthError(response.status);
         this.options.logger.error(LOG_EVENTS.TWITCH_API_AUTH_FAILED, {
           statusCode: response.status,
@@ -199,7 +255,7 @@ export class TwitchApiClient implements LiveStatusProvider {
         redirect: 'error',
         headers: {
           'Client-Id': this.options.clientId,
-          Authorization: `Bearer ${this.options.accessToken}`,
+          Authorization: `Bearer ${this.accessToken}`,
         },
         signal: abortController.signal,
       });
@@ -219,6 +275,153 @@ export class TwitchApiClient implements LiveStatusProvider {
           : 'network';
       throw this.createTemporaryError(reason);
     }
+  }
+
+  private canRefresh(): boolean {
+    return (this.options.clientSecret ?? '').length > 0;
+  }
+
+  private maintainToken(forceRefresh: boolean): Promise<void> {
+    if (!this.canRefresh()) {
+      return Promise.resolve();
+    }
+    const existing = this.tokenMaintenanceFlight;
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const flight = this.runTokenMaintenance(forceRefresh);
+    this.tokenMaintenanceFlight = flight;
+    flight.then(
+      () => {
+        if (this.tokenMaintenanceFlight === flight) {
+          this.tokenMaintenanceFlight = undefined;
+        }
+      },
+      () => {
+        if (this.tokenMaintenanceFlight === flight) {
+          this.tokenMaintenanceFlight = undefined;
+        }
+      },
+    );
+    return flight;
+  }
+
+  private async runTokenMaintenance(forceRefresh: boolean): Promise<void> {
+    if (!forceRefresh && !this.shouldValidateToken()) {
+      return;
+    }
+
+    if (!forceRefresh && this.accessToken !== '') {
+      const validation = await this.validateToken();
+      if (
+        validation.valid &&
+        validation.expiresIn > this.tokenRefreshThresholdSeconds
+      ) {
+        this.lastValidatedAt = this.now().getTime();
+        this.options.logger.debug('twitch_api_token_validated', {
+          expiresInSeconds: validation.expiresIn,
+        });
+        return;
+      }
+    }
+
+    await this.issueAppAccessToken();
+  }
+
+  private shouldValidateToken(): boolean {
+    return (
+      this.lastValidatedAt === undefined ||
+      this.now().getTime() - this.lastValidatedAt >=
+        this.tokenValidationIntervalMs
+    );
+  }
+
+  private async validateToken(): Promise<
+    { readonly valid: true; readonly expiresIn: number } |
+    { readonly valid: false }
+  > {
+    let response: Response;
+    try {
+      response = await this.fetchFunction(this.validateEndpoint, {
+        method: 'GET',
+        redirect: 'error',
+        headers: { Authorization: `OAuth ${this.accessToken}` },
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
+      });
+    } catch {
+      return { valid: false };
+    }
+    if (response.status !== 200) {
+      return { valid: false };
+    }
+    try {
+      const payload = await response.json() as unknown;
+      if (
+        !isRecord(payload) ||
+        payload.client_id !== this.options.clientId ||
+        typeof payload.expires_in !== 'number' ||
+        !Number.isSafeInteger(payload.expires_in) ||
+        payload.expires_in < 0
+      ) {
+        return { valid: false };
+      }
+      return { valid: true, expiresIn: payload.expires_in };
+    } catch {
+      return { valid: false };
+    }
+  }
+
+  private async issueAppAccessToken(): Promise<void> {
+    const body = new URLSearchParams({
+      client_id: this.options.clientId,
+      client_secret: this.options.clientSecret ?? '',
+      grant_type: 'client_credentials',
+    });
+    let response: Response;
+    try {
+      response = await this.fetchFunction(this.tokenEndpoint, {
+        method: 'POST',
+        redirect: 'error',
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        body,
+        signal: AbortSignal.timeout(this.requestTimeoutMs),
+      });
+    } catch {
+      throw this.createTemporaryError('network');
+    }
+    if (response.status !== 200) {
+      const error = new TwitchApiAuthError(
+        response.status === 403 ? 403 : 401,
+      );
+      this.options.logger.error(LOG_EVENTS.TWITCH_API_AUTH_FAILED, {
+        statusCode: response.status,
+      });
+      throw error;
+    }
+    let payload: unknown;
+    try {
+      payload = await response.json() as unknown;
+    } catch {
+      throw this.createTemporaryError('invalid-response', response.status);
+    }
+    if (
+      !isRecord(payload) ||
+      typeof payload.access_token !== 'string' ||
+      payload.access_token.length === 0 ||
+      typeof payload.expires_in !== 'number' ||
+      !Number.isSafeInteger(payload.expires_in) ||
+      payload.expires_in <= 0
+    ) {
+      throw this.createTemporaryError('invalid-response', response.status);
+    }
+    this.accessToken = payload.access_token;
+    this.lastValidatedAt = this.now().getTime();
+    this.options.logger.info('twitch_api_token_refreshed', {
+      expiresInSeconds: payload.expires_in,
+    });
   }
 
   private createRateLimitError(headers: Headers): TwitchApiRateLimitError {

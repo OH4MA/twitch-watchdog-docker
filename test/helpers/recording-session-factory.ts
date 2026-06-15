@@ -77,6 +77,10 @@ export class RecordingChannelSession implements ChannelSession {
       checkedAt: CHECKED_AT,
     };
   }
+
+  public async captureScreenshot(): Promise<Buffer> {
+    return Buffer.from(`screenshot:${this.channel}`);
+  }
 }
 
 export class RecordingChannelSessionFactory

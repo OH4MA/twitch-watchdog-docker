@@ -32,6 +32,7 @@ export function createTestConfig(
     twitchApi: {
       clientId: 'integration-client-id',
       accessToken: 'integration-access-token',
+      clientSecret: '',
       ...overrides.twitchApi,
     },
     browser: {

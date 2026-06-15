@@ -3,7 +3,10 @@ export {
   TelegramApiError,
   type TelegramApi,
   type TelegramApiClientOptions,
+  type TelegramBotCommand,
   type TelegramMessage,
+  type TelegramReplyKeyboardMarkup,
+  type TelegramSendMessageOptions,
   type TelegramUpdate,
 } from './TelegramApiClient.js';
 export {
