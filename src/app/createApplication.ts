@@ -1,7 +1,6 @@
 import {
   DefaultBrowserManager,
   DefaultChannelSessionFactory,
-  DropClaimer,
   RewardClaimer,
 } from '../browser/index.js';
 import {
@@ -102,10 +101,6 @@ export function createDefaultRuntime(
     logger,
     onResult: (result) => telegramBot?.notifyReward(result),
   });
-  const dropClaimer = new DropClaimer({
-    logger,
-    onResult: (result) => telegramBot?.notifyDrop(result),
-  });
   const sessionFactory = new DefaultChannelSessionFactory({
     config: {
       get channels() {
@@ -115,7 +110,6 @@ export function createDefaultRuntime(
     },
     browserManager,
     rewardClaimer,
-    dropClaimer,
     logger,
     onInvalidated: (channel, reason) =>
       sessionManagerReference.current?.invalidate(channel, reason),

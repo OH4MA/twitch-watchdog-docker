@@ -1,6 +1,6 @@
 # Twitch Watchdog
 
-Twitch Watchdog 是以 Node.js、TypeScript 與 Playwright 建立的長時間執行服務。它使用 Twitch Helix API 檢查頻道是否開台，依設定優先序建立觀看頁面，並自動領取 Bonus Channel Points 與已達成條件的 Twitch Drops。
+Twitch Watchdog 是以 Node.js、TypeScript 與 Playwright 建立的長時間執行服務。它使用 Twitch Helix API 檢查頻道是否開台，依設定優先序建立觀看頁面，並自動領取 Bonus Channel Points。
 
 本專案不會自動登入。使用者必須自行提供 Twitch API token，以及在本機手動登入後匯出的 Playwright `storageState`。
 
@@ -76,18 +76,6 @@ Bot 啟動時會透過 Telegram `setMyCommands` 註冊原生 `/` 指令選單，
 ### Bonus Channel Points
 
 服務每隔 `browser.reward_check_interval_seconds` 檢查觀看頁面。除了 Twitch 的 `community-points-claim-button` selector，也支援 BetterTTV 使用的 `.claimable-bonus__icon`，並排除 destructive control 與餘額選單，避免誤點。
-
-### Twitch Drops
-
-Drops 流程參考 BetterTTV：服務會從已登入 Twitch 頁面的 React tree 找到 Twitch 自己的 Apollo client，查詢目前帳號的 Drops inventory，並只領取符合以下條件的項目：
-
-- 尚未領取。
-- 已達到要求的觀看分鐘數。
-- 前置條件已完成。
-
-所有觀看 session 共用同一個 Drops 領取器，最多每 60 秒查詢一次，避免多頻道重複請求。若 Twitch 未提供 `dropInstanceID`，服務會使用 `userId#campaignId#dropId` 格式建立 fallback，與 BetterTTV 的處理方式一致。
-
-Drops 查詢與 mutation 都在 Twitch 頁面內透過既有 Apollo client 執行；服務不會把登入 cookie 或使用者 OAuth token 複製回 Node.js。Twitch 的 React/Apollo 內部結構不是公開 API，若網站改版，會記錄 `drop_claim_failed`，但不會停止掛台或忠誠點數領取。
 
 ## Twitch API token
 
@@ -207,7 +195,7 @@ docker compose logs --no-log-prefix twitch-watchdog
 docker compose logs --no-log-prefix twitch-watchdog | jq -c 'select(.event == "reward_claimed")'
 ```
 
-主要事件包含 `service_started`、`config_loaded`、`credential_checked`、`stream_online`、`stream_offline`、`watch_started`、`watch_stopped`、`reward_claimed`、`reward_claim_failed`、`drop_claimed`、`drop_claim_failed`、`browser_restarted`、`page_health_failed` 與 `service_stopped`。Telegram 輪詢、傳送失敗與未授權 chat 也會留下不含訊息內容的事件。日誌會遮罩 cookie、token、Authorization header 與 storageState 內容。
+主要事件包含 `service_started`、`config_loaded`、`credential_checked`、`stream_online`、`stream_offline`、`watch_started`、`watch_stopped`、`reward_claimed`、`reward_claim_failed`、`browser_restarted`、`page_health_failed` 與 `service_stopped`。Telegram 輪詢、傳送失敗與未授權 chat 也會留下不含訊息內容的事件。日誌會遮罩 cookie、token、Authorization header 與 storageState 內容。
 
 ## 開發與測試
 

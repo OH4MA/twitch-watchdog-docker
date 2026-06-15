@@ -126,23 +126,11 @@ describe('DefaultTelegramBot', () => {
       channel: 'first',
       checkedAt: '2026-06-14T00:00:00.000Z',
     });
-    await harness.bot.notifyDrop({
-      status: 'claimed',
-      claimedAt: '2026-06-14T00:00:00.000Z',
-      claimedCount: 2,
-      failedCount: 0,
-    });
-    await harness.bot.notifyDrop({
-      status: 'not_found',
-      checkedAt: '2026-06-14T00:00:00.000Z',
-    });
-
-    expect(harness.api.sendMessage).toHaveBeenCalledTimes(4);
+    expect(harness.api.sendMessage).toHaveBeenCalledTimes(3);
     expect(harness.api.sendMessage.mock.calls.map(([, text]) => text)).toEqual([
       '🔴 first 已開台',
       '⚫ first 已離線',
       '🎁 first 已領取忠誠點數',
-      '🎁 已領取 2 個 Twitch Drops',
     ]);
   });
 

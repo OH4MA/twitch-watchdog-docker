@@ -243,8 +243,6 @@ describe('JsonLineLogger', () => {
       'watch_stopped',
       'reward_claimed',
       'reward_claim_failed',
-      'drop_claimed',
-      'drop_claim_failed',
       'browser_restarted',
       'page_health_failed',
       'service_stopped',

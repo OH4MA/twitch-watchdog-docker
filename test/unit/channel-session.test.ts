@@ -2,7 +2,6 @@ import type { Locator, Page } from 'playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { BrowserManager } from '../../src/browser/BrowserManager.js';
-import type { DropClaimer } from '../../src/browser/DropClaimer.js';
 import {
   CHANNEL_HEALTH_SELECTORS,
   DefaultChannelSession,
@@ -474,43 +473,6 @@ describe('DefaultChannelSession', () => {
     });
     expect(session.state).toBe('watching');
     expect(browser.closePage).not.toHaveBeenCalled();
-
-    await session.stop('test_complete');
-  });
-
-  it('同一 reward tick 會檢查 Drops，失敗不影響忠誠點數結果', async () => {
-    const mockPage = createMockPage({ marker: 'liveContent' });
-    const browser = createBrowserManager(mockPage.page);
-    const rewards = createRewardClaimer(async (_page, channel) => ({
-      status: 'claimed',
-      channel,
-      claimedAt: NOW.toISOString(),
-    }));
-    const claimDrops = vi.fn(async () => {
-      throw new Error('drop query failed');
-    });
-    const logs = createLogger();
-    const session = new DefaultChannelSession({
-      channel: CHANNEL,
-      config: createConfig(),
-      browserManager: browser.manager,
-      rewardClaimer: rewards.claimer,
-      dropClaimer: {
-        claimIfAvailable: claimDrops,
-      } satisfies Pick<DropClaimer, 'claimIfAvailable'>,
-      logger: logs.logger,
-    });
-    await session.start();
-
-    await expect(session.tickRewardClaim()).resolves.toMatchObject({
-      status: 'claimed',
-    });
-    expect(claimDrops).toHaveBeenCalledWith(mockPage.page);
-    expect(logs.warn).toHaveBeenCalledWith(
-      'drop_claim_unexpected_failure',
-      expect.objectContaining({ channel: CHANNEL }),
-    );
-    expect(session.state).toBe('watching');
 
     await session.stop('test_complete');
   });

@@ -11,7 +11,7 @@
 | Twitch API 暫時失敗保留既有 sessions | `test/integration/watchdog-flow.test.ts` | `npm run test:integration` |
 | Browser page 失效會 invalidate session，下一輪 scheduler 重建 | `test/integration/browser-invalidation.test.ts` | `npm run test:integration` |
 | Reward 按鈕存在、fallback、disabled、不存在、點擊失敗與冷卻 | `test/e2e/reward-claimer.spec.ts` | `npm run test:e2e` |
-| BetterTTV Bonus selector、Drops Apollo inventory 篩選與 fallback instance ID | `test/e2e/reward-claimer.spec.ts`、`test/e2e/drop-claimer.spec.ts` | `npm run test:e2e` |
+| BetterTTV Bonus selector | `test/e2e/reward-claimer.spec.ts` | `npm run test:e2e` |
 | live、offline、login-required、error mock pages 健康判斷 | `test/e2e/channel-session.spec.ts` | `npm run test:e2e` |
 | 頻道與領點狀態日誌、層級與敏感資料遮罩 | `test/unit/logging.test.ts`、上述整合測試 | `npm test` |
 | Config、Credential、API、Selector、Browser、Session、Scheduler 模組契約 | `test/unit/**/*.test.ts` | `npm run test:unit` |
@@ -21,13 +21,13 @@
 
 Reward click 已由 Playwright 對 `test/mock-pages/**` 的 E2E 測試覆蓋；跨模組整合測試不重複模擬 DOM 點擊。
 
-2026-06-15 Bonus Channel Points 與 Drops 功能驗證：
+2026-06-15 Bonus Channel Points 功能驗證：
 
 - `npm run lint`：通過。
 - `npm run build`：通過。
-- `npm test`：18 個檔案、250 項測試通過。
-- `npm run test:e2e`：13 項 Playwright 測試通過。
-- 本次尚未重新執行 Docker smoke test。
+- `npm test`：17 個檔案、243 項測試通過。
+- `npm run test:e2e`：12 項 Playwright 測試通過。
+- Docker smoke test：通過。
 
 2026-06-14 最終驗收結果：
 

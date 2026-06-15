@@ -14,8 +14,6 @@ export const LOG_EVENTS = {
   WATCH_STOPPED: 'watch_stopped',
   REWARD_CLAIMED: 'reward_claimed',
   REWARD_CLAIM_FAILED: 'reward_claim_failed',
-  DROP_CLAIMED: 'drop_claimed',
-  DROP_CLAIM_FAILED: 'drop_claim_failed',
   BROWSER_RESTARTED: 'browser_restarted',
   PAGE_HEALTH_FAILED: 'page_health_failed',
   SERVICE_STOPPED: 'service_stopped',

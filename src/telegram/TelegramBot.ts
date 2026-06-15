@@ -1,7 +1,4 @@
-import type {
-  DropClaimResult,
-  RewardClaimResult,
-} from '../browser/index.js';
+import type { RewardClaimResult } from '../browser/index.js';
 import type {
   AppConfig,
   RuntimeConfigManager,
@@ -26,7 +23,6 @@ export interface TelegramBot {
   stop(reason: string): Promise<void>;
   notifyStreamStatus(change: StreamStatusChange): Promise<void>;
   notifyReward(result: RewardClaimResult): Promise<void>;
-  notifyDrop(result: DropClaimResult): Promise<void>;
 }
 
 export interface TelegramBotOptions {
@@ -122,18 +118,6 @@ export class DefaultTelegramBot implements TelegramBot {
     }
     if (result.status === 'click_failed') {
       return this.broadcast(`⚠️ ${result.channel} 忠誠點數領取失敗`);
-    }
-    return Promise.resolve();
-  }
-
-  public notifyDrop(result: DropClaimResult): Promise<void> {
-    if (result.status === 'claimed') {
-      return this.broadcast(
-        `🎁 已領取 ${result.claimedCount} 個 Twitch Drops`,
-      );
-    }
-    if (result.status === 'claim_failed') {
-      return this.broadcast('⚠️ Twitch Drops 領取失敗');
     }
     return Promise.resolve();
   }

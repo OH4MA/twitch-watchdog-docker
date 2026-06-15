@@ -12,7 +12,6 @@
 - 依 `channels` 順序與 `max_concurrent_streams` 選擇實際觀看頻道。
 - 為每個實際觀看頻道建立獨立 Twitch Page。
 - 自動領取 Bonus Channel Points。
-- 自動領取已達成條件的 Twitch Drops。
 - 透過 Telegram 查詢狀態、擷取截圖及修改頻道設定。
 - 使用 Client ID 與 Client Secret 自動取得、驗證及更新 Twitch App Access Token。
 - 以 Firefox 避免 Linux ARM64 Chromium 缺少 H.264 解碼能力造成 Twitch Error #4000。
@@ -80,23 +79,6 @@ TELEGRAM_ALLOWED_CHAT_IDS=
 - 排除有 `aria-label` 的餘額選單按鈕，避免誤點 `Bits and Points Balances`。
 - 成功後同一頻道套用 60 秒冷卻。
 - 領取失敗只記錄事件，不會中止觀看 session。
-
-### Twitch Drops
-
-主要檔案：
-
-- `src/browser/DropClaimer.ts`
-- `src/browser/ChannelSession.ts`
-
-實作參考 BetterTTV：
-
-- 從 Twitch 頁面的 React tree 找到既有 Apollo client。
-- 查詢 Drops inventory。
-- 只領取尚未領取、觀看分鐘已達標、前置條件已完成的 Drops。
-- 缺少 `dropInstanceID` 時使用 `userId#campaignId#dropId` fallback。
-- 所有頻道共用單一 Drops Claimer，每 60 秒最多查詢一次。
-- GraphQL 操作留在 Twitch Page 內，不將使用者 OAuth token 或 cookie 傳回 Node.js。
-- Twitch React／Apollo 結構改版時可能需要更新探索方式。
 
 ### Twitch API Token 自動管理
 
@@ -228,14 +210,14 @@ git diff --check                 通過
 
 Vitest：
 
-- 18 個測試檔案
-- 250 項測試通過
+- 17 個測試檔案
+- 243 項測試通過
 
 Playwright E2E：
 
-- 13 項測試通過
+- 12 項測試通過
 - macOS managed sandbox 會阻擋 Chromium／Firefox Mach port，需在沙箱外執行。
-- Docker image 內 13 項 E2E 也已通過。
+- Docker image 內 12 項 E2E 也已通過。
 
 Docker：
 
@@ -246,7 +228,7 @@ Docker：
 Telegram screenshot 修正後：
 
 - Telegram Bot 單元測試 8／8 通過。
-- 完整 Vitest 250／250 通過。
+- 完整 Vitest 243／243 通過。
 - lint 與 TypeScript build 通過。
 
 ## 實際執行狀態與資源觀察
@@ -315,8 +297,8 @@ Telegram screenshot 修正後：
 
 ## 已知風險
 
-1. Twitch React／Apollo 與播放器 DOM 都不是穩定公開 API，網站改版可能影響 Drops 或畫質控制。
-2. 強制低畫質必須確認 Channel Points 與 Drops 觀看進度仍正常累積。
+1. Twitch 播放器 DOM 不是穩定公開 API，網站改版可能影響畫質控制。
+2. 強制低畫質必須確認 Channel Points 仍正常累積。
 3. 圖片／字型／tracking 阻擋需要逐項驗證，不可攔截 GraphQL、media、登入與觀看心跳。
 4. `config.yml` 必須讓容器內 `pwuser` 可寫；正式部署不可使用世界可寫權限。
 5. Firefox 在不同 OS、CPU 架構與 runtime 的影音解碼效能差異很大。
@@ -331,8 +313,8 @@ Telegram screenshot 修正後：
 2. 依文件 P0 實作跨平台 benchmark helper。
 3. 取得 1／2／3 個頻道各 15 分鐘的基準數據。
 4. 分開實作低畫質、靜音與 viewport，避免一次修改過多變因。
-5. 每個階段執行 lint、build、250 項 unit/integration、13 項 E2E 與 Docker smoke。
-6. 實際連續觀看至少 2 小時，確認 Points、Drops、截圖與 page health。
+5. 每個階段執行 lint、build、243 項 unit/integration、12 項 E2E 與 Docker smoke。
+6. 實際連續觀看至少 2 小時，確認 Points、截圖與 page health。
 7. 最終在 Linux、macOS、Windows CI 驗證主機模式；Docker smoke 集中於 Linux。
 
 ## 常用命令
