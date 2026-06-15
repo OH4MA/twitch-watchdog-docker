@@ -2,87 +2,129 @@
 
 更新日期：2026-06-15
 
-## 交接摘要
+## 專案摘要
 
-此專案是以 Node.js、TypeScript、Playwright 與 Docker 實作的 Twitch
-頻道監控服務。服務會透過 Twitch API 判斷頻道是否開台，為活躍頻道建立
-瀏覽器工作階段、檢查頁面健康狀態及領取忠誠點數，並可透過 Telegram
-接收狀態與截圖指令。
+此專案是以 Node.js、TypeScript、Playwright Firefox 與 Docker 實作的 Twitch 頻道監控服務。
 
-目前工作樹包含大量尚未提交的功能修改。不要重設或丟棄現有變更。
+目前功能：
 
-最新需求是 Twitch API 只需設定 Client ID 與 Client Secret，服務啟動後
-自動取得 App Access Token，後續驗證及更新 Token。程式碼與單元測試已完成，
-但最後一版尚未完成 E2E、Docker smoke test 與重新部署。
+- 透過 Twitch Helix API 監控頻道開台狀態。
+- 依 `channels` 順序與 `max_concurrent_streams` 選擇實際觀看頻道。
+- 為每個實際觀看頻道建立獨立 Twitch Page。
+- 自動領取 Bonus Channel Points。
+- 自動領取已達成條件的 Twitch Drops。
+- 透過 Telegram 查詢狀態、擷取截圖及修改頻道設定。
+- 使用 Client ID 與 Client Secret 自動取得、驗證及更新 Twitch App Access Token。
+- 以 Firefox 避免 Linux ARM64 Chromium 缺少 H.264 解碼能力造成 Twitch Error #4000。
 
-## 工作樹狀態
+## Git 狀態
 
 - 分支：`master`
-- 目前有 34 個已追蹤檔案被修改，約 816 行新增、42 行刪除。
-- 尚未建立 Git commit。
-- 舊文件 `doc/tasks/progress.md` 是初始階段紀錄，部分內容仍以 Chromium
-  為準；本文件才是目前交接基準。
-- `.env`、`config.yml` 與 `data/browser-state/` 已由 `.gitignore` 排除。
-- 不可提交 `.env`、Twitch Token、Client Secret、Telegram Bot Token 或
-  Playwright `storage-state.json`。
+- 最新 commit：`7d92adc telegram screenshot 邏輯修改`
+- 前一個主要功能 commit：`ab11810 新增獎勵自動領取與 Telegram 設定控制`
+- 目前未提交文件：`doc/current_progress.md`、`doc/optimization.md`
+- `config.yml`、`.env` 與 `data/browser-state/` 已由 `.gitignore` 排除。
 
-## 已完成項目
+不可提交：
 
-### Bonus Channel Points 與 Twitch Drops
+- Twitch Client Secret、Access Token。
+- Telegram Bot Token、允許的 Chat ID。
+- `data/browser-state/storage-state.json`。
+- 任何 cookie、Authorization header 或登入資訊。
+
+## 設定來源
+
+### `.env`
+
+敏感設定與整合開關由環境變數提供：
+
+```dotenv
+TWITCH_CLIENT_ID=
+TWITCH_CLIENT_SECRET=
+TWITCH_ACCESS_TOKEN=
+TELEGRAM_ENABLED=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_ALLOWED_CHAT_IDS=
+```
+
+目前建議只設定 `TWITCH_CLIENT_ID` 與 `TWITCH_CLIENT_SECRET`。`TWITCH_ACCESS_TOKEN` 為選填相容性備援。
+
+### `config.yml`
+
+一般執行設定保留在 YAML：
+
+- `channels`
+- `check_interval_seconds`
+- `max_concurrent_streams`
+- `headless`
+- `storage_state_path`
+- `log_level`
+- `browser`
+
+已從 `config.yml` 與 `config.example.yml` 移除重複的 `twitch_api`、`telegram` 區塊。Telegram polling timeout 未設定時預設為 25 秒。
+
+## 已完成功能
+
+### Bonus Channel Points
 
 主要檔案：
 
 - `src/browser/RewardClaimer.ts`
+- `src/browser/ChannelSession.ts`
+
+目前行為：
+
+- 支援 Twitch `community-points-claim-button`。
+- 支援 BetterTTV 使用的 `.claimable-bonus__icon`。
+- 排除 destructive control。
+- 排除有 `aria-label` 的餘額選單按鈕，避免誤點 `Bits and Points Balances`。
+- 成功後同一頻道套用 60 秒冷卻。
+- 領取失敗只記錄事件，不會中止觀看 session。
+
+### Twitch Drops
+
+主要檔案：
+
 - `src/browser/DropClaimer.ts`
 - `src/browser/ChannelSession.ts`
-- `src/telegram/TelegramBot.ts`
 
-已參考 BetterTTV 目前實作完成：
+實作參考 BetterTTV：
 
-- Bonus Channel Points 支援 `.claimable-bonus__icon` selector。
-- 排除 destructive control 與有 `aria-label` 的餘額選單按鈕。
-- 從 Twitch 頁面 React tree 找到既有 Apollo client。
-- 查詢 Drops inventory，只領取已達觀看分鐘、前置條件完成且尚未領取的項目。
+- 從 Twitch 頁面的 React tree 找到既有 Apollo client。
+- 查詢 Drops inventory。
+- 只領取尚未領取、觀看分鐘已達標、前置條件已完成的 Drops。
 - 缺少 `dropInstanceID` 時使用 `userId#campaignId#dropId` fallback。
-- 多頻道共用單一 Drops 領取器，每 60 秒最多查詢一次。
-- Drops 失敗不會停止掛台或忠誠點數領取。
-- 成功或失敗會寫入結構化日誌並傳送 Telegram 通知。
+- 所有頻道共用單一 Drops Claimer，每 60 秒最多查詢一次。
+- GraphQL 操作留在 Twitch Page 內，不將使用者 OAuth token 或 cookie 傳回 Node.js。
+- Twitch React／Apollo 結構改版時可能需要更新探索方式。
 
 ### Twitch API Token 自動管理
 
 主要檔案：
 
 - `src/twitch/TwitchApiClient.ts`
-- `src/config/AppConfig.ts`
 - `src/config/ConfigLoader.ts`
 - `src/app/createApplication.ts`
-- `docker-compose.yml`
-- `config.example.yml`
 
 目前行為：
 
 - `TWITCH_CLIENT_ID` 必填。
-- `TWITCH_CLIENT_SECRET` 可供 Client Credentials 流程使用。
-- `TWITCH_ACCESS_TOKEN` 已改成非必要的相容性備援。
-- 沒有初始 Access Token 時，第一次查詢開台狀態前會呼叫
-  `https://id.twitch.tv/oauth2/token` 取得 App Access Token。
-- Token 只保存在記憶體，不會回寫 `.env`。
-- 預設每小時驗證 Token。
-- Token 剩餘效期低於 24 小時時會自動更新。
-- Helix API 回傳 401 時，若有 Client Secret，會強制更新一次 Token 並重試。
-- 更新成功會記錄 `twitch_api_token_refreshed`。
-- 驗證成功會以 debug 等級記錄 `twitch_api_token_validated`。
+- 可使用 `TWITCH_CLIENT_SECRET` 執行 Client Credentials flow。
+- 沒有初始 Access Token 時，在第一次 Helix 查詢前自動取得 App Access Token。
+- Token 只保存在程序記憶體。
+- 預設每小時呼叫 Twitch `/validate`。
+- Token 剩餘效期低於 24 小時時自動更新。
+- Helix 回傳 HTTP 401 時強制更新一次並重試。
+- `TWITCH_ACCESS_TOKEN` 可作為沒有 Client Secret 時的手動備援。
 
-本機 `.env` 目前檢查結果：
+相關事件：
 
-- `TWITCH_CLIENT_ID`：已設定
-- `TWITCH_CLIENT_SECRET`：已設定
-- `TWITCH_ACCESS_TOKEN`：未偵測到設定
-- Telegram Bot Token 與允許的 Chat ID：已設定
+- `twitch_api_token_refreshed`
+- `twitch_api_token_validated`
+- `twitch_api_auth_failed`
+- `twitch_api_rate_limited`
 
-以上只記錄是否存在，不得把實際值加入文件或 commit。
-
-### Twitch Error #4000 與瀏覽器相容性
+### Firefox 與 Error #4000
 
 主要檔案：
 
@@ -90,123 +132,212 @@
 - `src/browser/ChannelSession.ts`
 - `Dockerfile`
 
-已確認 Chromium/headless shell 在測試環境播放 Twitch 時可能缺少 H.264
-支援，頁面會顯示：
-
-`This video is either unavailable or not supported in this browser. (Error #4000)`
-
 已完成：
 
-- Playwright 瀏覽器由 Chromium 切換為 Firefox。
-- 頁面健康檢查會辨識 Error #4000，並回報 `error_page`。
-- Docker 容器新增 `HOME`、`XDG_CONFIG_HOME`、`XDG_CACHE_HOME` 至 `/tmp`
-  的設定，以支援唯讀 root filesystem 下的完整瀏覽器執行。
-- 隔離測試中 Firefox 可正常播放 Twitch，影片未暫停且播放時間持續增加。
-- 先前部署版本已觀察兩輪 30 秒健康檢查，未出現
-  `page_health_failed`。
+- Production browser 由 Chromium 改為 Firefox。
+- 健康檢查會辨識 Error #4000 與不支援影片訊息。
+- 容器將 `HOME`、`XDG_CONFIG_HOME`、`XDG_CACHE_HOME` 指向 `/tmp`，相容唯讀 root filesystem。
+- Browser、Context 與所有 Page 共用同一個登入 storageState。
 
-### Telegram 即時截圖
+### Telegram Bot
 
 主要檔案：
 
-- `src/browser/ChannelSession.ts`
-- `src/sessions/SessionManager.ts`
 - `src/telegram/TelegramApiClient.ts`
 - `src/telegram/TelegramBot.ts`
+- `src/config/RuntimeConfigManager.ts`
+- `src/scheduler/WatchdogScheduler.ts`
 
-已完成：
+支援指令：
 
+- `/status`
+- `/channels`
+- `/config`
+- `/channel_add <channel>`
+- `/channel_remove <channel>`
+- `/channels_set <channel1,channel2>`
+- `/max_streams <number>`
+- `/check`
+- `/pause`
+- `/resume`
 - `/screenshot`
 - `/screenshot <channel>`
-- 從目前活躍的瀏覽器頁面擷取 PNG。
-- 使用 Telegram `sendPhoto` multipart API 直接傳送。
-- 截圖保存在記憶體，不寫入磁碟。
-- `/help` 已加入截圖指令說明。
-- Bot 啟動時會註冊 Telegram 原生 `/` 指令選單。
-- 啟動通知、`/start` 與 `/help` 會顯示持續按鈕鍵盤。
-- `/config` 可查看頻道與最大同時觀看設定。
-- `/channel_add`、`/channel_remove`、`/channels_set` 可更新頻道清單。
-- `/max_streams` 可更新 `max_concurrent_streams`。
-- 更新會立即套用並持久化回 `config.yml`。
+- `/help`
 
-需要在重新部署後以實際 Telegram Bot 再測一次，例如：
+Bot 啟動時會：
 
-`/screenshot neipuduck`
+- 使用 `setMyCommands` 註冊 Telegram 原生指令選單。
+- 在啟動通知、`/start` 與 `/help` 顯示持續鍵盤。
+- 只接受 `TELEGRAM_ALLOWED_CHAT_IDS` 內的 chat。
 
-### 忠誠點數領取修正
+### Telegram 設定控制
 
-主要檔案：
+Telegram 可修改：
 
-- `src/browser/RewardClaimer.ts`
-- `test/unit/reward-claimer.test.ts`
-- `test/e2e/reward-claimer.spec.ts`
+- `channels`
+- `max_concurrent_streams`
 
-已修正備援 selector 誤把 Twitch 的 `Bits and Points Balances` 按鈕當成
-「領取忠誠點數」按鈕的問題，並補上單元與 E2E 測試案例。
+更新流程：
 
-### storageState 與敏感設定
+1. 驗證頻道名稱與數值。
+2. 寫回 `config.yml`，保留其他 YAML 欄位與註解。
+3. 立即更新 scheduler。
+4. 移除頻道或降低上限時停止多餘 session。
+5. 立即重新檢查新頻道。
 
-- Twitch 登入狀態已成功匯出至本機忽略的
-  `data/browser-state/storage-state.json`。
-- 先前驗證過 storageState 內含有效登入 cookie。
-- 檔案權限曾設為 `600`。
-- 容器以唯讀方式掛載 `/data/browser-state`。
-- 不可在 log、文件或 commit 中顯示 cookie 或 Token 值。
+規則：
 
-## 測試紀錄
+- 頻道清單至少保留一個頻道。
+- 頻道名稱只允許 1 至 25 字元的英數字與底線。
+- 頻道名稱不分大小寫去重。
+- `max_concurrent_streams` 不可大於頻道數。
+- 移除頻道後若上限過大，會自動降低。
 
-在「Access Token 改為可省略，啟動時用 Client Secret 取得第一個 Token」
-的最新修改後，已通過：
+Docker Compose 已將 `/app/config.yml` 改為可寫 bind mount；`storage-state.json` 仍為唯讀。
+
+### 多頻道選擇
+
+當開台頻道超過 `max_concurrent_streams`：
+
+1. 依 `channels` 設定順序決定優先權。
+2. 只為前 N 個正在直播的頻道建立 Page。
+3. 其餘頻道仍由 Helix API 監控，但不建立觀看 session。
+4. 高優先序頻道上線時，會取代最低優先序的 session。
+5. 目前觀看頻道離線後，自動補上下一個仍在線的頻道。
+
+### Telegram 多頻道截圖
+
+最新修正已提交於 `7d92adc`：
+
+- `/screenshot` 會依 active session 順序回傳所有觀看中頻道的 PNG。
+- `/screenshot <channel>` 只回傳指定頻道。
+- 每張圖片使用頻道名稱作為 filename 與 caption。
+- 截圖只保存在記憶體，不寫入磁碟。
+- 沒有 active session 時回覆提示。
+
+## 測試與驗證
+
+目前最後一次完整程式驗證：
 
 ```text
-npm run lint
-npm run build
-npm test
+npm run lint                     通過
+npm run build                    通過
+npm test                         通過
+git diff --check                 通過
 ```
 
-Vitest 結果：
+Vitest：
 
-- 18 個測試檔案通過
-- 250 個測試通過
+- 18 個測試檔案
+- 250 項測試通過
 
-Bonus Channel Points 與 Drops 修改後另已通過：
+Playwright E2E：
 
-- 13 個 Playwright E2E 測試
+- 13 項測試通過
+- macOS managed sandbox 會阻擋 Chromium／Firefox Mach port，需在沙箱外執行。
+- Docker image 內 13 項 E2E 也已通過。
 
-另已用以下條件驗證 Compose 設定：
+Docker：
 
-- `TWITCH_ACCESS_TOKEN` 為空
-- `TWITCH_CLIENT_SECRET` 有值
-- `node test/docker/verify-compose.mjs service` 通過
+- Compose model verifier 通過。
+- Docker smoke test 通過。
+- Smoke 已驗證 build、image 內容、缺設定失敗、Compose up、SIGTERM、restart 與容器內 `config.yml` 可寫。
 
-在前一版功能整合時曾通過：
+Telegram screenshot 修正後：
 
-- 230 個 Vitest 測試
-- 11 個 E2E 測試
-- Docker smoke test
+- Telegram Bot 單元測試 8／8 通過。
+- 完整 Vitest 250／250 通過。
+- lint 與 TypeScript build 通過。
 
-但前述完整驗證是在「啟動仍需初始 Access Token」的版本完成，不能取代
-最新 Token 啟動流程的重新驗證。
+## 實際執行狀態與資源觀察
 
-## 尚未完成與風險
+2026-06-15 實際容器量測，當時有 2 個 `watch_started` session：
 
-1. 最新版本尚未執行 `./scripts/docker-smoke.sh`。
-2. 最新版本尚未重新執行 `docker compose build` 與部署。
-3. 本次交接因沙箱無權連線 OrbStack Docker socket，無法確認容器當前狀態。
-4. 目前執行中的容器若仍存在，很可能是最後一次修改前的映像，不應視為
-   已包含「無 Access Token 啟動」功能。
-5. `TwitchApiClient` 的 401 更新後重試流程已有測試，但部署前仍應檢查
-   timeout 清理及錯誤分類是否符合預期。
-6. Drops 依賴 Twitch 未公開的 React/Apollo 內部結構，網站改版後可能需要
-   更新 client 探索方式或 GraphQL schema。
-7. 最終目標環境是 Debian Linux x86_64；目前主要實機驗證是在 macOS
-   ARM64/OrbStack，仍需在目標主機執行 Docker smoke test。
+| 項目 | 單次觀察值 |
+| --- | ---: |
+| 容器 CPU | 約 95% |
+| 容器記憶體 | 約 1.74 GiB |
+| Node.js RSS | 約 154 MiB |
+| Firefox 主程序 RSS | 約 611 MiB |
+| Firefox Web Content RSS | 約 513–524 MiB／程序 |
 
-## 下一位 Agent 操作順序
+結論：
 
-1. 先閱讀本文件、`git status` 與目前 diff，不要還原既有修改。
-2. 確認 `.env` 的 Client ID 與 Client Secret 存在，但不要輸出值。
-3. 執行完整程式驗證：
+- 目前已共用單一 Firefox 與 Browser Context。
+- 每個實際觀看頻道仍需要一個完整 Twitch Page。
+- 主要成本是直播下載、軟體影音解碼、Twitch React UI、播放器與 Page 資源。
+- CPU、記憶體與網路用量會隨實際觀看 Page 數接近線性增加。
+- Node.js scheduler、Telegram 與 Helix API 不是主要瓶頸。
+
+## 跨平台最佳化規劃
+
+新增但尚未提交：
+
+- `doc/optimization.md`
+
+文件已整理完整跨平台方案，目標支援：
+
+- Linux x86_64／ARM64。
+- macOS Intel／Apple Silicon。
+- Windows。
+- Docker Engine、Docker Desktop、OrbStack 與相容 OCI runtime。
+- 主機直接執行 Node.js／Playwright。
+
+核心方案只使用 Node.js、Playwright 與標準 Web API，不依賴：
+
+- Docker socket。
+- Linux `/proc`、cgroup、systemd。
+- macOS Instruments。
+- Windows WMI。
+- 特定 shell 指令。
+- 特定 GPU、driver 或硬體解碼。
+
+規劃優先順序：
+
+1. 建立純 Node.js 跨平台 benchmark helper。
+2. 加入播放器最低畫質設定與安全降級。
+3. 將 viewport 調整為 `640x360` 並自動靜音。
+4. 透過 Playwright routing 阻擋已驗證不必要的圖片與字型。
+5. 健康檢查改為 60 秒，獎勵檢查改為 30 秒。
+6. 使用穩定 jitter 錯開各 Page 的週期工作。
+7. 移除完整 `body.textContent()` 健康掃描。
+8. 加入低頻率跨平台 runtime telemetry。
+
+不採用：
+
+- 停止影片或攔截 HLS media。
+- 單一 Page 快速輪流切換頻道。
+- 將 Docker resource limit 當成最佳化。
+- 依賴平台特定硬體加速。
+- 凍結或 background throttle Page。
+
+尚未實作任何最佳化程式碼，目前只有方案文件。
+
+## 已知風險
+
+1. Twitch React／Apollo 與播放器 DOM 都不是穩定公開 API，網站改版可能影響 Drops 或畫質控制。
+2. 強制低畫質必須確認 Channel Points 與 Drops 觀看進度仍正常累積。
+3. 圖片／字型／tracking 阻擋需要逐項驗證，不可攔截 GraphQL、media、登入與觀看心跳。
+4. `config.yml` 必須讓容器內 `pwuser` 可寫；正式部署不可使用世界可寫權限。
+5. Firefox 在不同 OS、CPU 架構與 runtime 的影音解碼效能差異很大。
+6. Telegram Bot token 具有管理能力，必須持續限制 allowed chat IDs。
+7. `storage-state.json` 等同登入憑證，必須保持唯讀掛載與最小檔案權限。
+
+## 下一步
+
+目前最合理的工作順序：
+
+1. Review `doc/optimization.md` 並建立文件 commit。
+2. 依文件 P0 實作跨平台 benchmark helper。
+3. 取得 1／2／3 個頻道各 15 分鐘的基準數據。
+4. 分開實作低畫質、靜音與 viewport，避免一次修改過多變因。
+5. 每個階段執行 lint、build、250 項 unit/integration、13 項 E2E 與 Docker smoke。
+6. 實際連續觀看至少 2 小時，確認 Points、Drops、截圖與 page health。
+7. 最終在 Linux、macOS、Windows CI 驗證主機模式；Docker smoke 集中於 Linux。
+
+## 常用命令
+
+程式驗證：
 
 ```bash
 npm run lint
@@ -215,57 +346,38 @@ npm test
 npm run test:e2e
 ```
 
-4. 執行容器驗證：
+Docker 驗證：
 
 ```bash
 ./scripts/docker-smoke.sh
 docker compose build
 docker compose up -d --force-recreate
 docker compose ps
-docker compose logs -f twitch-watchdog
-```
-
-5. 啟動時確認沒有設定 `TWITCH_ACCESS_TOKEN` 仍可出現
-   `twitch_api_token_refreshed`，接著正常出現服務啟動及頻道監控 log。
-6. 確認活躍 Twitch 頁面沒有 Error #4000 或 `page_health_failed`。
-7. 透過 Telegram 測試 `/status`、`/screenshot` 與
-   `/screenshot <channel>`。
-8. 在 Debian x86_64 目標主機重跑 smoke test 與實際頻道監控。
-9. 全部通過後再整理並建立 commit；目前沒有任何 commit 可供回退。
-
-## 常用操作
-
-停止但保留容器：
-
-```bash
-docker compose stop
-```
-
-停止並移除容器與網路：
-
-```bash
-docker compose down
-```
-
-查看近期 log：
-
-```bash
 docker compose logs --tail=200 twitch-watchdog
 ```
 
-持續追蹤 log：
+資源觀察：
 
 ```bash
-docker compose logs -f twitch-watchdog
+docker stats twitch-watchdog --no-stream
+docker top twitch-watchdog -eo pid,ppid,rss,comm,args
 ```
 
-## 重要安全與部署設定
+停止服務：
 
-- 容器使用非 root 使用者 `pwuser`。
-- root filesystem 設為唯讀。
+```bash
+docker compose stop
+docker compose down
+```
+
+## 安全與部署
+
+- 容器使用非 root `pwuser`。
+- root filesystem 為唯讀。
 - `/tmp` 使用 tmpfs。
 - 啟用 `no-new-privileges`。
-- 使用專案內的 seccomp profile。
-- `storage-state.json` 以唯讀 volume 掛載。
-- 官方 Playwright 映像可用於 `linux/amd64` 與 `linux/arm64`，但仍需在
-  實際 Debian x86_64 主機驗證。
+- 使用專案內 seccomp profile。
+- `config.yml` 可寫，供 Telegram 持久化設定。
+- `storage-state.json` 維持唯讀 bind mount。
+- Firefox browser process crash 具有限次自動重啟與 backoff。
+- 所有敏感資訊必須經環境變數或忽略檔案提供，不可進入 image、Git、log 或文件。
