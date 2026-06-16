@@ -125,7 +125,7 @@ docker compose stop
 docker compose down
 ```
 
-Compose 會將 `config.yml` 以可寫 bind mount 掛載，供 Telegram 管理指令持久化設定；`data/browser-state` 仍為唯讀。`config.yml` 必須可由容器內的 `pwuser` 寫入，請使用擁有者或群組權限處理，不要用世界可寫權限部署正式服務。
+Compose 會將 `config.yml` 以可寫 bind mount 掛載，供 Telegram 管理指令持久化設定；`data/browser-state` 仍為唯讀。`config.yml` 必須可由容器內的 `pwuser` 寫入，請使用擁有者或群組權限處理，不要用全域可寫權限部署正式服務。
 
 ## Telegram 管理
 
