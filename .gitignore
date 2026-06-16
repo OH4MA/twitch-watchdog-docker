@@ -3,6 +3,7 @@ dist/
 coverage/
 playwright-report/
 test-results/
+blob-report/
 
 .env
 .env.*
@@ -12,6 +13,19 @@ config.yml
 data/browser-state/
 *.storage-state.json
 storage-state.json
+
+doc/current_progress.md
+doc/detailed-design.md
+doc/optimization.md
+doc/prompt.md
+doc/proposal.md
+doc/tasks/
+
+.agents/
+.codex/
+
+benchmark*.csv
+*.benchmark.csv
 
 .DS_Store
 npm-debug.log*
