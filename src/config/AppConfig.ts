@@ -14,6 +14,7 @@ export interface BrowserConfig {
   readonly navigationTimeoutMs: number;
   readonly pageHealthCheckIntervalSeconds: number;
   readonly rewardCheckIntervalSeconds: number;
+  readonly pageRefreshIntervalSeconds: number;
   readonly restartOnCrash: boolean;
   readonly streamQuality: StreamQuality;
   readonly enforceStreamQualitySeconds: number;

@@ -20,6 +20,7 @@ import {
 const CHANNEL_PATTERN = /^[A-Za-z0-9_]{1,25}$/u;
 const DEFAULT_HEALTH_FAILURE_THRESHOLD = 3;
 const MAX_TIMER_JITTER_MS = 5_000;
+const MAX_PAGE_REFRESH_JITTER_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export const CHANNEL_HEALTH_SELECTORS = Object.freeze({
@@ -79,6 +80,8 @@ export interface ChannelSession {
   checkHealth(): Promise<ChannelHealthResult>;
   tickRewardClaim(): Promise<RewardClaimResult>;
   captureScreenshot(): Promise<Buffer>;
+  getRefreshStatus(): ChannelSessionRefreshStatus;
+  refreshNow(): Promise<boolean>;
 }
 
 export interface ChannelSessionFactory {
@@ -100,6 +103,27 @@ export type ChannelSessionInvalidationObserver = (
   reason: 'health_failure_threshold',
 ) => Promise<void> | void;
 
+export interface ChannelSessionRefreshStatus {
+  readonly channel: string;
+  readonly enabled: boolean;
+  readonly nextRefreshAt?: string;
+  readonly secondsUntilRefresh?: number;
+}
+
+export interface ChannelSessionRefreshEvent {
+  readonly channel: string;
+  readonly reason: ChannelSessionRefreshReason;
+  readonly startedAt: string;
+}
+
+export type ChannelSessionRefreshReason =
+  | 'scheduled_refresh'
+  | 'manual_refresh';
+
+export type ChannelSessionRefreshObserver = (
+  event: ChannelSessionRefreshEvent,
+) => Promise<void> | void;
+
 export interface DefaultChannelSessionOptions {
   readonly channel: string;
   readonly config: Pick<AppConfig, 'channels' | 'browser'>;
@@ -110,6 +134,7 @@ export interface DefaultChannelSessionOptions {
   readonly healthFailureThreshold?: number;
   readonly healthEvaluator?: ChannelHealthEvaluator;
   readonly onInvalidated?: ChannelSessionInvalidationObserver;
+  readonly onPageRefresh?: ChannelSessionRefreshObserver;
   readonly now?: () => Date;
 }
 
@@ -122,6 +147,7 @@ export interface DefaultChannelSessionFactoryOptions {
   readonly healthFailureThreshold?: number;
   readonly healthEvaluator?: ChannelHealthEvaluator;
   readonly onInvalidated?: ChannelSessionInvalidationObserver;
+  readonly onPageRefresh?: ChannelSessionRefreshObserver;
   readonly now?: () => Date;
 }
 
@@ -158,6 +184,9 @@ export class DefaultChannelSession implements ChannelSession {
   private readonly onInvalidated:
     | ChannelSessionInvalidationObserver
     | undefined;
+  private readonly onPageRefresh:
+    | ChannelSessionRefreshObserver
+    | undefined;
   private readonly now: () => Date;
 
   private currentState: ChannelSessionState = 'stopped';
@@ -166,8 +195,11 @@ export class DefaultChannelSession implements ChannelSession {
   private healthTimer: NodeJS.Timeout | undefined;
   private rewardTimer: NodeJS.Timeout | undefined;
   private playbackOptimizationTimer: NodeJS.Timeout | undefined;
+  private pageRefreshTimer: NodeJS.Timeout | undefined;
   private healthFlight: Promise<ChannelHealthResult> | undefined;
   private rewardFlight: Promise<RewardClaimResult> | undefined;
+  private reloadFlight: Promise<void> | undefined;
+  private nextPageRefreshAtMs: number | undefined;
   private lifecycleTail: Promise<void> = Promise.resolve();
 
   public constructor(
@@ -192,6 +224,7 @@ export class DefaultChannelSession implements ChannelSession {
     this.healthEvaluator =
       options.healthEvaluator ?? evaluateChannelHealth;
     this.onInvalidated = options.onInvalidated;
+    this.onPageRefresh = options.onPageRefresh;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -342,6 +375,47 @@ export class DefaultChannelSession implements ChannelSession {
     return Buffer.from(screenshot);
   }
 
+  public getRefreshStatus(): ChannelSessionRefreshStatus {
+    const enabled =
+      this.options.config.browser.pageRefreshIntervalSeconds > 0;
+    const nextRefreshAtMs = this.nextPageRefreshAtMs;
+    if (!enabled || nextRefreshAtMs === undefined) {
+      return {
+        channel: this.channel,
+        enabled,
+      };
+    }
+
+    return {
+      channel: this.channel,
+      enabled,
+      nextRefreshAt: new Date(nextRefreshAtMs).toISOString(),
+      secondsUntilRefresh: Math.max(
+        0,
+        Math.ceil((nextRefreshAtMs - this.now().getTime()) / 1_000),
+      ),
+    };
+  }
+
+  public async refreshNow(): Promise<boolean> {
+    const page = this.page;
+    if (
+      page === undefined ||
+      page.isClosed() ||
+      !this.shouldScheduleWork()
+    ) {
+      return false;
+    }
+
+    this.notifyPageRefresh('manual_refresh');
+    await this.reloadPage(page, 'manual_refresh');
+    safeLog(this.logger, 'info', 'page_refreshed', {
+      channel: this.channel,
+      reason: 'manual_refresh',
+    });
+    return true;
+  }
+
   private async runHealthCheck(): Promise<ChannelHealthResult> {
     const page = this.page;
     if (page === undefined) {
@@ -405,11 +479,11 @@ export class DefaultChannelSession implements ChannelSession {
     }
 
     try {
-      await page.reload();
-      await this.optimizePlayback(page);
+      await this.reloadPage(page, 'health_failure');
     } catch (error: unknown) {
       safeLog(this.logger, 'warn', 'page_reload_failed', {
         channel: this.channel,
+        reason: 'health_failure',
         error: safeErrorMessage(error),
       });
     }
@@ -471,7 +545,8 @@ export class DefaultChannelSession implements ChannelSession {
     if (
       this.healthTimer !== undefined ||
       this.rewardTimer !== undefined ||
-      this.playbackOptimizationTimer !== undefined
+      this.playbackOptimizationTimer !== undefined ||
+      this.pageRefreshTimer !== undefined
     ) {
       return;
     }
@@ -479,6 +554,7 @@ export class DefaultChannelSession implements ChannelSession {
     this.scheduleHealthCheck();
     this.scheduleRewardCheck();
     this.schedulePlaybackOptimization();
+    this.schedulePageRefresh();
   }
 
   private clearTimers(): void {
@@ -494,6 +570,11 @@ export class DefaultChannelSession implements ChannelSession {
       clearTimeout(this.playbackOptimizationTimer);
       this.playbackOptimizationTimer = undefined;
     }
+    if (this.pageRefreshTimer !== undefined) {
+      clearTimeout(this.pageRefreshTimer);
+      this.pageRefreshTimer = undefined;
+    }
+    this.nextPageRefreshAtMs = undefined;
   }
 
   private async optimizePlayback(page: Page): Promise<void> {
@@ -571,11 +652,100 @@ export class DefaultChannelSession implements ChannelSession {
     ));
   }
 
+  private schedulePageRefresh(): void {
+    if (
+      !this.shouldScheduleWork() ||
+      this.options.config.browser.pageRefreshIntervalSeconds <= 0
+    ) {
+      return;
+    }
+    const delay = this.pageRefreshDelay();
+    this.nextPageRefreshAtMs = this.now().getTime() + delay;
+    this.pageRefreshTimer = setTimeout(() => {
+      this.pageRefreshTimer = undefined;
+      this.nextPageRefreshAtMs = undefined;
+      void this.refreshPage()
+        .catch((error: unknown) => {
+          safeLog(this.logger, 'warn', 'page_refresh_failed', {
+            channel: this.channel,
+            error: safeErrorMessage(error),
+          });
+        })
+        .finally(() => {
+          this.schedulePageRefresh();
+        });
+    }, delay);
+  }
+
+  private async refreshPage(): Promise<void> {
+    const page = this.page;
+    if (
+      page === undefined ||
+      page.isClosed() ||
+      !this.shouldScheduleWork()
+    ) {
+      return;
+    }
+
+    this.notifyPageRefresh('scheduled_refresh');
+    await this.reloadPage(page, 'scheduled_refresh');
+    safeLog(this.logger, 'info', 'page_refreshed', {
+      channel: this.channel,
+      reason: 'scheduled_refresh',
+    });
+  }
+
+  private reloadPage(page: Page, reason: string): Promise<void> {
+    const existingFlight = this.reloadFlight;
+    if (existingFlight !== undefined) {
+      return existingFlight;
+    }
+
+    const flight = this.runPageReload(page, reason);
+    this.reloadFlight = flight;
+    flight.then(
+      () => {
+        if (this.reloadFlight === flight) {
+          this.reloadFlight = undefined;
+        }
+      },
+      () => {
+        if (this.reloadFlight === flight) {
+          this.reloadFlight = undefined;
+        }
+      },
+    );
+    return flight;
+  }
+
+  private async runPageReload(page: Page, reason: string): Promise<void> {
+    await page.reload();
+    await this.optimizePlayback(page);
+    safeLog(this.logger, 'debug', 'page_reloaded', {
+      channel: this.channel,
+      reason,
+    });
+  }
+
   private timerDelay(intervalSeconds: number, task: string): number {
     return Math.min(
       MAX_TIMER_DELAY_MS,
       intervalSeconds * 1_000 +
         stableJitter(`${this.channel}:${task}`, MAX_TIMER_JITTER_MS),
+    );
+  }
+
+  private pageRefreshDelay(): number {
+    const intervalMs =
+      this.options.config.browser.pageRefreshIntervalSeconds * 1_000;
+    const refreshJitterMs = Math.min(
+      MAX_PAGE_REFRESH_JITTER_MS,
+      Math.max(MAX_TIMER_JITTER_MS, Math.floor(intervalMs * 0.2)),
+    );
+    return Math.min(
+      MAX_TIMER_DELAY_MS,
+      intervalMs +
+        stableJitter(`${this.channel}:page-refresh`, refreshJitterMs),
     );
   }
 
@@ -593,6 +763,9 @@ export class DefaultChannelSession implements ChannelSession {
     }
     if (this.rewardFlight !== undefined) {
       currentWork.push(this.rewardFlight);
+    }
+    if (this.reloadFlight !== undefined) {
+      currentWork.push(this.reloadFlight);
     }
     await Promise.allSettled(currentWork);
   }
@@ -621,6 +794,28 @@ export class DefaultChannelSession implements ChannelSession {
         safeLog(this.logger, 'warn', 'session_invalidation_failed', {
           channel: this.channel,
           reason: 'health_failure_threshold',
+          error: safeErrorMessage(error),
+        });
+      });
+  }
+
+  private notifyPageRefresh(reason: ChannelSessionRefreshReason): void {
+    const observer = this.onPageRefresh;
+    if (observer === undefined) {
+      return;
+    }
+
+    const event: ChannelSessionRefreshEvent = {
+      channel: this.channel,
+      reason,
+      startedAt: this.now().toISOString(),
+    };
+    void Promise.resolve()
+      .then(() => observer(event))
+      .catch((error: unknown) => {
+        safeLog(this.logger, 'warn', 'page_refresh_notification_failed', {
+          channel: this.channel,
+          reason: event.reason,
           error: safeErrorMessage(error),
         });
       });

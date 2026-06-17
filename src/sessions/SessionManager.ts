@@ -6,11 +6,13 @@ import {
 import type {
   ChannelSession,
   ChannelSessionFactory,
+  ChannelSessionRefreshStatus,
 } from '../browser/ChannelSession.js';
 
 export type {
   ChannelSession,
   ChannelSessionFactory,
+  ChannelSessionRefreshStatus,
 } from '../browser/ChannelSession.js';
 
 export interface SessionManager {
@@ -18,7 +20,15 @@ export interface SessionManager {
   stopAll(reason: string): Promise<void>;
   invalidate(channel: string, reason: string): Promise<void>;
   getActiveChannels(): string[];
+  getRefreshStatuses(): readonly ChannelSessionRefreshStatus[];
+  refreshPages(channel?: string): Promise<readonly SessionRefreshResult[]>;
   captureScreenshot(channel?: string): Promise<SessionScreenshot | undefined>;
+}
+
+export interface SessionRefreshResult {
+  readonly channel: string;
+  readonly status: 'refreshed' | 'unavailable' | 'failed';
+  readonly error?: string;
 }
 
 export interface SessionScreenshot {
@@ -101,6 +111,43 @@ export class DefaultSessionManager implements SessionManager {
 
   public getActiveChannels(): string[] {
     return [...this.sessions.keys()];
+  }
+
+  public getRefreshStatuses(): readonly ChannelSessionRefreshStatus[] {
+    return [...this.sessions.values()].map((session) =>
+      session.getRefreshStatus(),
+    );
+  }
+
+  public async refreshPages(
+    requestedChannel?: string,
+  ): Promise<readonly SessionRefreshResult[]> {
+    const entries = requestedChannel === undefined
+      ? [...this.sessions]
+      : optionalEntry(findSession(this.sessions, requestedChannel));
+
+    const results: SessionRefreshResult[] = [];
+    for (const [channel, session] of entries) {
+      try {
+        const refreshed = await session.refreshNow();
+        results.push({
+          channel,
+          status: refreshed ? 'refreshed' : 'unavailable',
+        });
+      } catch (error: unknown) {
+        const safeError = safeErrorMessage(error);
+        this.safeLog('warn', 'session_manual_refresh_failed', {
+          channel,
+          error: safeError,
+        });
+        results.push({
+          channel,
+          status: 'failed',
+          error: safeError,
+        });
+      }
+    }
+    return results;
   }
 
   public async captureScreenshot(
@@ -217,6 +264,12 @@ function findSession(
   return [...sessions].find(
     ([channel]) => channel.toLocaleLowerCase('en-US') === normalized,
   );
+}
+
+function optionalEntry(
+  entry: readonly [string, ChannelSession] | undefined,
+): readonly (readonly [string, ChannelSession])[] {
+  return entry === undefined ? [] : [entry];
 }
 
 function safeErrorMessage(error: unknown): string {

@@ -47,6 +47,7 @@ describe('YamlConfigLoader', () => {
         navigationTimeoutMs: 45_000,
         pageHealthCheckIntervalSeconds: 40,
         rewardCheckIntervalSeconds: 20,
+        pageRefreshIntervalSeconds: 900,
         restartOnCrash: false,
         streamQuality: '360p',
         enforceStreamQualitySeconds: 180,
@@ -102,6 +103,7 @@ twitch_api:
         navigationTimeoutMs: 30_000,
         pageHealthCheckIntervalSeconds: 60,
         rewardCheckIntervalSeconds: 30,
+        pageRefreshIntervalSeconds: 300,
         restartOnCrash: true,
         streamQuality: '160p',
         enforceStreamQualitySeconds: 120,
@@ -320,6 +322,10 @@ twitch_api:
       'reward_check_interval_seconds 型別',
       'reward_check_interval_seconds: false',
     ],
+    [
+      'page_refresh_interval_seconds 型別',
+      'page_refresh_interval_seconds: false',
+    ],
     ['restart_on_crash', 'restart_on_crash: "true"'],
     ['stream_quality', 'stream_quality: 720p'],
     [
@@ -397,6 +403,10 @@ twitch_api:
     [
       'browser.reward_check_interval_seconds',
       'browser:\n  reward_check_interval_seconds: 2147484',
+    ],
+    [
+      'browser.page_refresh_interval_seconds',
+      'browser:\n  page_refresh_interval_seconds: 2147484',
     ],
   ])('%s 超過 Node timer 上限時拒絕設定', async (_field, replacement) => {
     await expect(

@@ -446,6 +446,7 @@ function createSessionManager(
     }),
     invalidate: vi.fn(async () => undefined),
     getActiveChannels: vi.fn(() => []),
+    getRefreshStatuses: vi.fn(() => []),
     captureScreenshot: vi.fn(async () => undefined),
   };
 }

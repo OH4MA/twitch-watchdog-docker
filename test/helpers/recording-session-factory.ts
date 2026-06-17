@@ -81,6 +81,20 @@ export class RecordingChannelSession implements ChannelSession {
   public async captureScreenshot(): Promise<Buffer> {
     return Buffer.from(`screenshot:${this.channel}`);
   }
+
+  public async refreshNow(): Promise<boolean> {
+    return this.currentState === 'watching';
+  }
+
+  public getRefreshStatus(): {
+    readonly channel: string;
+    readonly enabled: boolean;
+  } {
+    return {
+      channel: this.channel,
+      enabled: false,
+    };
+  }
 }
 
 export class RecordingChannelSessionFactory

@@ -25,6 +25,7 @@ const DEFAULT_STORAGE_STATE_PATH =
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 const DEFAULT_PAGE_HEALTH_CHECK_INTERVAL_SECONDS = 60;
 const DEFAULT_REWARD_CHECK_INTERVAL_SECONDS = 30;
+const DEFAULT_PAGE_REFRESH_INTERVAL_SECONDS = 300;
 const DEFAULT_STREAM_QUALITY: StreamQuality = '160p';
 const DEFAULT_ENFORCE_STREAM_QUALITY_SECONDS = 120;
 const DEFAULT_VIEWPORT_WIDTH = 1280;
@@ -287,6 +288,13 @@ function buildBrowserConfig(value: unknown): BrowserConfig {
       browser.reward_check_interval_seconds,
       'browser.reward_check_interval_seconds',
       DEFAULT_REWARD_CHECK_INTERVAL_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    pageRefreshIntervalSeconds: optionalIntegerAtLeast(
+      browser.page_refresh_interval_seconds,
+      'browser.page_refresh_interval_seconds',
+      DEFAULT_PAGE_REFRESH_INTERVAL_SECONDS,
+      0,
       MAX_TIMER_DELAY_SECONDS,
     ),
     restartOnCrash: optionalBoolean(

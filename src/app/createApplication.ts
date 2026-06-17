@@ -114,6 +114,7 @@ export function createDefaultRuntime(
     logger,
     onInvalidated: (channel, reason) =>
       sessionManagerReference.current?.invalidate(channel, reason),
+    onPageRefresh: (event) => telegramBot?.notifyPageRefresh(event),
   });
 
   const sessionManager = new DefaultSessionManager(sessionFactory, {

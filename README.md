@@ -47,6 +47,10 @@ max_concurrent_streams: 1
 headless: true
 storage_state_path: /data/browser-state/storage-state.json
 log_level: info
+
+browser:
+  stream_quality: 160p
+  page_refresh_interval_seconds: 300
 ```
 
 重點設定：
@@ -56,6 +60,7 @@ log_level: info
 - `max_concurrent_streams`：最大同時觀看數。
 - `storage_state_path`：容器內 Playwright storageState 路徑。
 - `browser.stream_quality`：預設 `160p`；設為 `auto` 可停用強制畫質。
+- `browser.page_refresh_interval_seconds`：預設 300 秒，定時重整觀看頁並依頻道錯開；設為 `0` 可關閉。
 
 ## Twitch API 設定
 
@@ -148,6 +153,9 @@ TELEGRAM_ALLOWED_CHAT_IDS=你的ChatID
 
 - `/status`：服務、開台與觀看狀態。
 - `/channels`：監控頻道與最近一次狀態。
+- `/refresh`：顯示正在觀看頻道的播放器重整倒數。
+- `/refresh_now`：立即重整所有觀看中頻道。
+- `/refresh_now 頻道名稱`：立即重整指定觀看中頻道。
 - `/config`：顯示目前頻道與最大同時觀看數。
 - `/channel_add 頻道名稱`：新增監控頻道。
 - `/channel_remove 頻道名稱`：移除監控頻道。
@@ -159,6 +167,8 @@ TELEGRAM_ALLOWED_CHAT_IDS=你的ChatID
 - `/screenshot`：回傳所有觀看中頻道截圖。
 - `/screenshot 頻道名稱`：回傳指定觀看中頻道截圖。
 - `/help`：顯示指令說明。
+
+定時重整 Twitch 播放器時，bot 會向允許的 chat 傳送重整提醒。
 
 Bot token 具有管理能力，不得提交 Git 或貼到任何公開位置。
 

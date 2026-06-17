@@ -12,6 +12,7 @@ browser:
   navigation_timeout_ms: 30000
   page_health_check_interval_seconds: 60
   reward_check_interval_seconds: 30
+  page_refresh_interval_seconds: 300
   restart_on_crash: true
   stream_quality: 160p
   enforce_stream_quality_seconds: 120

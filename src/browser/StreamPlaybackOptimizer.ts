@@ -75,9 +75,11 @@ implements StreamPlaybackOptimizer {
         const video = element as unknown as {
           muted: boolean;
           volume: number;
+          disablePictureInPicture?: boolean;
         };
         video.muted = true;
         video.volume = 0;
+        video.disablePictureInPicture = true;
         return video.muted && video.volume === 0;
       });
     } catch (error: unknown) {
@@ -144,8 +146,9 @@ implements StreamPlaybackOptimizer {
       const labels = (await options.allTextContents()).map((label) =>
         label.trim(),
       );
+      const qualityCandidates = qualityOptionCandidates(labels);
       const selectedQuality = chooseQuality(
-        labels,
+        qualityCandidates.map((candidate) => candidate.label),
         requestedQuality,
       );
       if (selectedQuality === undefined) {
@@ -156,12 +159,12 @@ implements StreamPlaybackOptimizer {
         );
         return undefined;
       }
-      const optionIndex = labels.findIndex((label) =>
-        label.toLocaleLowerCase('en-US').includes(
+      const option = qualityCandidates.find((candidate) =>
+        candidate.label.toLocaleLowerCase('en-US').includes(
           selectedQuality.toLocaleLowerCase('en-US'),
         ),
       );
-      if (optionIndex === -1) {
+      if (option === undefined) {
         this.logQualitySkipped(
           channel,
           requestedQuality,
@@ -169,7 +172,7 @@ implements StreamPlaybackOptimizer {
         );
         return undefined;
       }
-      await options.nth(optionIndex).click({
+      await options.nth(option.index).click({
         force: true,
         timeout: CONTROL_WAIT_TIMEOUT_MS,
       });
@@ -210,6 +213,35 @@ implements StreamPlaybackOptimizer {
     }
     await page.mouse.move(320, 320);
   }
+}
+
+function qualityOptionCandidates(
+  labels: readonly string[],
+): readonly { readonly index: number; readonly label: string }[] {
+  return labels.flatMap((label, index) => {
+    if (!isQualityLabel(label)) {
+      return [];
+    }
+    return [{ index, label }];
+  });
+}
+
+function isQualityLabel(label: string): boolean {
+  const normalized = label.trim().toLocaleLowerCase('en-US');
+  if (normalized === '') {
+    return false;
+  }
+  if (
+    normalized.includes('picture-in-picture') ||
+    normalized.includes('picture in picture')
+  ) {
+    return false;
+  }
+  return (
+    normalized === 'auto' ||
+    normalized.includes('source') ||
+    /\b\d{3,4}p\b/u.test(normalized)
+  );
 }
 
 export function chooseQuality(

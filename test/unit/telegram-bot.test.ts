@@ -18,7 +18,9 @@ describe('DefaultTelegramBot', () => {
       update(3, '42', '/pause'),
       update(4, '42', '/resume'),
       update(5, '42', '/channels'),
-      update(6, '42', '/screenshot second'),
+      update(6, '42', '/refresh'),
+      update(7, '42', '/refresh_now second'),
+      update(8, '42', '/screenshot second'),
     ]);
 
     await harness.bot.start();
@@ -40,6 +42,10 @@ describe('DefaultTelegramBot', () => {
           command: 'status',
           description: '顯示服務與觀看狀態',
         },
+        {
+          command: 'refresh',
+          description: '顯示播放器重整倒數',
+        },
       ]),
     );
     expect(harness.api.sendMessage.mock.calls[0]?.[2]).toEqual({
@@ -57,6 +63,15 @@ describe('DefaultTelegramBot', () => {
     expect(messages.some((text) => text.includes('1. 🔴 first'))).toBe(
       true,
     );
+    expect(messages.some((text) => text.includes('重整倒數'))).toBe(
+      true,
+    );
+    expect(messages.some((text) => text.includes('first：4 分鐘後'))).toBe(
+      true,
+    );
+    expect(messages.some((text) => text.includes('second：已重整'))).toBe(
+      true,
+    );
     expect(harness.api.sendPhoto).toHaveBeenCalledWith(
       '42',
       Buffer.from('screenshot:second'),
@@ -65,7 +80,7 @@ describe('DefaultTelegramBot', () => {
     );
     expect(messages.at(-1)).toContain('Twitch Watchdog 已停止');
     expect(harness.api.getUpdates.mock.calls[0]?.[0]).toBeUndefined();
-    expect(harness.api.getUpdates.mock.calls[1]?.[0]).toBe(7);
+    expect(harness.api.getUpdates.mock.calls[1]?.[0]).toBe(9);
   });
 
   it('忽略未授權 chat 且不執行管理指令', async () => {
@@ -132,6 +147,22 @@ describe('DefaultTelegramBot', () => {
       '⚫ first 已離線',
       '🎁 first 已領取忠誠點數',
     ]);
+  });
+
+  it('定時重整開始時推送 Telegram 提醒', async () => {
+    const harness = createHarness([]);
+
+    await harness.bot.notifyPageRefresh({
+      channel: 'first',
+      reason: 'scheduled_refresh',
+      startedAt: '2026-06-14T00:00:00.000Z',
+    });
+
+    expect(harness.api.sendMessage).toHaveBeenCalledWith(
+      '42',
+      '🔄 first 正在重整 Twitch 播放器',
+      undefined,
+    );
   });
 
   it('尚未啟動時 stop 不傳送誤導通知', async () => {
@@ -303,6 +334,26 @@ function createHarness(
     stopAll: vi.fn(async () => undefined),
     invalidate: vi.fn(async () => undefined),
     getActiveChannels: vi.fn(() => [...activeChannels]),
+    getRefreshStatuses: vi.fn(() =>
+      activeChannels.map((channel, index) => ({
+        channel,
+        enabled: true,
+        nextRefreshAt: `2026-06-14T00:0${index + 4}:00.000Z`,
+        secondsUntilRefresh: 240 + index * 60,
+      })),
+    ),
+    refreshPages: vi.fn(async (requestedChannel?: string) => {
+      const selectedChannels = requestedChannel === undefined
+        ? [...activeChannels]
+        : activeChannels.filter(
+          (channel) =>
+            channel.toLowerCase() === requestedChannel.toLowerCase(),
+        );
+      return selectedChannels.map((channel) => ({
+        channel,
+        status: 'refreshed' as const,
+      }));
+    }),
     captureScreenshot: vi.fn(async (channel?: string) => {
       const selected = channel ?? activeChannels[0];
       if (

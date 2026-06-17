@@ -1,4 +1,7 @@
-import type { RewardClaimResult } from '../browser/index.js';
+import type {
+  ChannelSessionRefreshEvent,
+  RewardClaimResult,
+} from '../browser/index.js';
 import type {
   AppConfig,
   RuntimeConfigManager,
@@ -23,6 +26,7 @@ export interface TelegramBot {
   stop(reason: string): Promise<void>;
   notifyStreamStatus(change: StreamStatusChange): Promise<void>;
   notifyReward(result: RewardClaimResult): Promise<void>;
+  notifyPageRefresh(event: ChannelSessionRefreshEvent): Promise<void>;
 }
 
 export interface TelegramBotOptions {
@@ -122,6 +126,12 @@ export class DefaultTelegramBot implements TelegramBot {
     return Promise.resolve();
   }
 
+  public notifyPageRefresh(
+    event: ChannelSessionRefreshEvent,
+  ): Promise<void> {
+    return this.broadcast(`🔄 ${event.channel} 正在重整 Twitch 播放器`);
+  }
+
   private async poll(signal: AbortSignal): Promise<void> {
     let failureCount = 0;
 
@@ -202,6 +212,15 @@ export class DefaultTelegramBot implements TelegramBot {
           chatId,
           this.formatChannels(),
         );
+        return;
+      case 'refresh':
+        await this.options.api.sendMessage(
+          chatId,
+          this.formatRefreshCountdown(),
+        );
+        return;
+      case 'refresh_now':
+        await this.refreshPages(chatId, argument);
         return;
       case 'config':
         await this.options.api.sendMessage(
@@ -308,6 +327,43 @@ export class DefaultTelegramBot implements TelegramBot {
     }
 
     await this.sendSessionScreenshot(chatId, screenshot);
+  }
+
+  private async refreshPages(
+    chatId: string,
+    requestedChannel: string | undefined,
+  ): Promise<void> {
+    const results =
+      await this.options.sessionManager.refreshPages(requestedChannel);
+    if (results.length === 0) {
+      const activeChannels = this.options.sessionManager.getActiveChannels();
+      await this.options.api.sendMessage(
+        chatId,
+        activeChannels.length === 0
+          ? '目前沒有正在觀看的頻道可重整。'
+          : [
+              `找不到正在觀看的頻道：${requestedChannel ?? ''}`,
+              `可用頻道：${activeChannels.join('、')}`,
+            ].join('\n'),
+      );
+      return;
+    }
+
+    await this.options.api.sendMessage(
+      chatId,
+      [
+        '手動重整結果：',
+        ...results.map((result, index) => {
+          if (result.status === 'refreshed') {
+            return `${index + 1}. ${result.channel}：已重整`;
+          }
+          if (result.status === 'unavailable') {
+            return `${index + 1}. ${result.channel}：目前無法重整`;
+          }
+          return `${index + 1}. ${result.channel}：重整失敗`;
+        }),
+      ].join('\n'),
+    );
   }
 
   private async sendSessionScreenshot(
@@ -500,6 +556,33 @@ export class DefaultTelegramBot implements TelegramBot {
       .join('\n');
   }
 
+  private formatRefreshCountdown(): string {
+    const statuses = this.options.sessionManager.getRefreshStatuses();
+    if (statuses.length === 0) {
+      return '目前沒有正在觀看的頻道。';
+    }
+
+    return [
+      '重整倒數：',
+      ...statuses.map((status, index) => {
+        if (!status.enabled) {
+          return `${index + 1}. ${status.channel}：已關閉定時重整`;
+        }
+        if (
+          status.nextRefreshAt === undefined ||
+          status.secondsUntilRefresh === undefined
+        ) {
+          return `${index + 1}. ${status.channel}：重整排程準備中`;
+        }
+        return [
+          `${index + 1}. ${status.channel}：`,
+          `${formatDuration(status.secondsUntilRefresh)}後`,
+          `（下次：${status.nextRefreshAt}）`,
+        ].join('');
+      }),
+    ].join('\n');
+  }
+
   private formatRuntimeConfig(): string {
     return formatRuntimeConfig(
       this.options.runtimeConfigManager.getConfig(),
@@ -524,6 +607,8 @@ const HELP_TEXT = [
   '可用指令：',
   '/status - 顯示服務與觀看狀態',
   '/channels - 顯示監控頻道',
+  '/refresh - 顯示 Twitch 播放器重整倒數',
+  '/refresh_now [頻道] - 立即重整全部或指定觀看頁',
   '/config - 顯示可調整的設定',
   '/channel_add 頻道 - 新增監控頻道',
   '/channel_remove 頻道 - 移除監控頻道',
@@ -539,6 +624,8 @@ const HELP_TEXT = [
 const BOT_COMMANDS: readonly TelegramBotCommand[] = Object.freeze([
   { command: 'status', description: '顯示服務與觀看狀態' },
   { command: 'channels', description: '顯示監控頻道' },
+  { command: 'refresh', description: '顯示播放器重整倒數' },
+  { command: 'refresh_now', description: '立即重整觀看頁' },
   { command: 'config', description: '顯示頻道與同時觀看設定' },
   { command: 'channel_add', description: '新增監控頻道' },
   { command: 'channel_remove', description: '移除監控頻道' },
@@ -554,6 +641,7 @@ const BOT_COMMANDS: readonly TelegramBotCommand[] = Object.freeze([
 const COMMAND_KEYBOARD: TelegramReplyKeyboardMarkup = Object.freeze({
   keyboard: [
     [{ text: '/status' }, { text: '/channels' }],
+    [{ text: '/refresh' }, { text: '/refresh_now' }],
     [{ text: '/config' }],
     [{ text: '/check' }, { text: '/screenshot' }],
     [{ text: '/pause' }, { text: '/resume' }],
@@ -595,6 +683,19 @@ function parseCommand(text: string): ParsedCommand | undefined {
 
 function formatList(values: readonly string[]): string {
   return values.length === 0 ? '無' : values.join('、');
+}
+
+function formatDuration(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes === 0) {
+    return `${remainingSeconds} 秒`;
+  }
+  if (remainingSeconds === 0) {
+    return `${minutes} 分鐘`;
+  }
+  return `${minutes} 分 ${remainingSeconds} 秒`;
 }
 
 function parseChannelsArgument(argument: string | undefined): string[] {

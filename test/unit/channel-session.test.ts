@@ -50,6 +50,8 @@ function createConfig(
         overrides.pageHealthCheckIntervalSeconds ?? 60,
       rewardCheckIntervalSeconds:
         overrides.rewardCheckIntervalSeconds ?? 30,
+      pageRefreshIntervalSeconds:
+        overrides.pageRefreshIntervalSeconds ?? 300,
       restartOnCrash: overrides.restartOnCrash ?? true,
       streamQuality: overrides.streamQuality ?? '160p',
       enforceStreamQualitySeconds:
@@ -72,6 +74,7 @@ function createMockPage(input: {
   readonly gotoError?: Error;
   readonly finalUrl?: string;
   readonly reloadError?: Error;
+  readonly reloadImplementation?: () => Promise<null>;
 } = {}): MockPageControls {
   let marker = input.marker;
   let currentUrl = input.url ?? 'about:blank';
@@ -101,6 +104,9 @@ function createMockPage(input: {
     return null;
   });
   const reload = vi.fn(async (): Promise<null> => {
+    if (input.reloadImplementation !== undefined) {
+      return input.reloadImplementation();
+    }
     if (input.reloadError !== undefined) {
       throw input.reloadError;
     }
@@ -560,6 +566,141 @@ describe('DefaultChannelSession', () => {
     await Promise.resolve();
     expect(healthEvaluator).toHaveBeenCalledOnce();
     expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
+  });
+
+  it('依設定定時刷新頁面並在 reload 後維持 watching', async () => {
+    vi.useFakeTimers();
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer();
+    const logs = createLogger();
+    const onPageRefresh = vi.fn(async () => undefined);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig({
+        pageRefreshIntervalSeconds: 1,
+      }),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      logger: logs.logger,
+      onPageRefresh,
+    });
+    await session.start();
+
+    expect(session.getRefreshStatus()).toMatchObject({
+      channel: CHANNEL,
+      enabled: true,
+      secondsUntilRefresh: expect.any(Number),
+      nextRefreshAt: expect.any(String),
+    });
+
+    vi.advanceTimersByTime(61_000);
+    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(mockPage.reload).toHaveBeenCalledOnce();
+    });
+
+    expect(session.state).toBe('watching');
+    await vi.waitFor(() => {
+      expect(logs.info).toHaveBeenCalledWith('page_refreshed', {
+        channel: CHANNEL,
+        reason: 'scheduled_refresh',
+      });
+    });
+    await vi.waitFor(() => {
+      expect(onPageRefresh).toHaveBeenCalledWith({
+        channel: CHANNEL,
+        reason: 'scheduled_refresh',
+        startedAt: expect.any(String),
+      });
+    });
+
+    await session.stop('test_complete');
+  });
+
+  it('page_refresh_interval_seconds 為 0 時不排程定時刷新', async () => {
+    vi.useFakeTimers();
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig({
+        pageRefreshIntervalSeconds: 0,
+      }),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+    });
+    await session.start();
+
+    expect(session.getRefreshStatus()).toEqual({
+      channel: CHANNEL,
+      enabled: false,
+    });
+
+    vi.advanceTimersByTime(3_600_000);
+    await Promise.resolve();
+
+    expect(mockPage.reload).not.toHaveBeenCalled();
+    await session.stop('test_complete');
+  });
+
+  it('refreshNow 會手動重整頁面並送出 manual_refresh 事件', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const onPageRefresh = vi.fn(async () => undefined);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+      onPageRefresh,
+      now: () => NOW,
+    });
+    await session.start();
+
+    await expect(session.refreshNow()).resolves.toBe(true);
+
+    expect(mockPage.reload).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(onPageRefresh).toHaveBeenCalledWith({
+        channel: CHANNEL,
+        reason: 'manual_refresh',
+        startedAt: NOW.toISOString(),
+      });
+    });
+
+    await session.stop('test_complete');
+  });
+
+  it('stop 會等待進行中的定時刷新完成再關閉 page', async () => {
+    vi.useFakeTimers();
+    const reload = deferred<null>();
+    const mockPage = createMockPage({
+      marker: 'liveContent',
+      reloadImplementation: () => reload.promise,
+    });
+    const browser = createBrowserManager(mockPage.page);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig({
+        pageRefreshIntervalSeconds: 1,
+      }),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+    });
+    await session.start();
+
+    vi.advanceTimersByTime(61_000);
+    await Promise.resolve();
+    expect(mockPage.reload).toHaveBeenCalledOnce();
+
+    const stopPromise = session.stop('shutdown');
+    await Promise.resolve();
+    expect(browser.closePage).not.toHaveBeenCalled();
+
+    reload.resolve(null);
+    await stopPromise;
+    expect(browser.closePage).toHaveBeenCalledOnce();
   });
 
   it('RewardClaimer 拋錯時轉為 click_failed 且避免 timer rejection', async () => {

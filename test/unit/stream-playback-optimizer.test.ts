@@ -45,6 +45,43 @@ describe('StreamPlaybackOptimizer', () => {
     );
   });
 
+  it('選畫質時忽略 Picture-in-picture 選項並停用 video PiP', async () => {
+    const videoState: {
+      muted: boolean;
+      volume: number;
+      disablePictureInPicture?: boolean;
+    } = {
+      muted: false,
+      volume: 1,
+    };
+    const clickedIndexes: number[] = [];
+    const page = createPage({
+      videoEvaluate: vi.fn(async (callback) =>
+        callback(videoState)),
+      settingsClick: vi.fn(async () => undefined),
+      qualityMenuClick: vi.fn(async () => undefined),
+      qualityOptionClick: vi.fn(async () => undefined),
+      qualityLabels: ['Picture-in-picture', 'Auto', '160p', '360p'],
+      qualityOptionIndexesClicked: clickedIndexes,
+    });
+    const optimizer = new DefaultStreamPlaybackOptimizer(
+      { muteAudio: true, streamQuality: '160p' },
+      { debug: vi.fn(), info: vi.fn() },
+    );
+
+    await expect(optimizer.optimize(page, 'channel')).resolves.toEqual({
+      muted: true,
+      selectedQuality: '160p',
+    });
+    expect(videoState).toMatchObject({
+      muted: true,
+      volume: 0,
+      disablePictureInPicture: true,
+    });
+    expect(clickedIndexes).toEqual([2]);
+  });
+
+
   it('auto 畫質只靜音，不開啟設定選單', async () => {
     const videoEvaluate = vi.fn(async () => true);
     const settingsClick = vi.fn(async () => undefined);
@@ -92,6 +129,7 @@ function createPage(input: {
   readonly qualityMenuClick: ReturnType<typeof vi.fn>;
   readonly qualityOptionClick: ReturnType<typeof vi.fn>;
   readonly qualityLabels: readonly string[];
+  readonly qualityOptionIndexesClicked?: number[];
   readonly videoCount?: number;
 }): Page {
   const firstLocator = (
@@ -118,9 +156,10 @@ function createPage(input: {
   const qualityOptions = {
     first: vi.fn(() => firstQualityOption),
     allTextContents: vi.fn(async () => [...input.qualityLabels]),
-    nth: vi.fn(() =>
-      firstLocator(true, input.qualityOptionClick),
-    ),
+    nth: vi.fn((index: number) => {
+      input.qualityOptionIndexesClicked?.push(index);
+      return firstLocator(true, input.qualityOptionClick);
+    }),
   } as unknown as Locator;
 
   return {

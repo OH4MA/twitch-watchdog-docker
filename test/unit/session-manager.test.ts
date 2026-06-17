@@ -17,6 +17,12 @@ function createSession(
     readonly onStart?: () => Promise<void>;
     readonly onStop?: (reason: string) => Promise<void>;
     readonly screenshot?: Buffer;
+    readonly refreshNow?: () => Promise<boolean>;
+    readonly refreshStatus?: {
+      readonly enabled: boolean;
+      readonly nextRefreshAt?: string;
+      readonly secondsUntilRefresh?: number;
+    };
   } = {},
 ): TestSession {
   return {
@@ -32,6 +38,20 @@ function createSession(
     })),
     captureScreenshot: vi.fn(async () =>
       options.screenshot ?? Buffer.from(`screenshot:${channel}`)),
+    refreshNow: vi.fn(options.refreshNow ?? (async () => true)),
+    getRefreshStatus: vi.fn(() => ({
+      channel,
+      enabled: options.refreshStatus?.enabled ?? false,
+      ...(options.refreshStatus?.nextRefreshAt === undefined
+        ? {}
+        : { nextRefreshAt: options.refreshStatus.nextRefreshAt }),
+      ...(options.refreshStatus?.secondsUntilRefresh === undefined
+        ? {}
+        : {
+          secondsUntilRefresh:
+            options.refreshStatus.secondsUntilRefresh,
+        }),
+    })),
   };
 }
 
@@ -145,6 +165,55 @@ describe('DefaultSessionManager', () => {
       image: Buffer.from('screenshot:second'),
     });
     await expect(manager.captureScreenshot('missing')).resolves.toBeUndefined();
+  });
+
+  it('依 active session 順序回報頁面重整狀態', async () => {
+    const manager = new DefaultSessionManager(createFactory((channel) =>
+      createSession(channel, {
+        refreshStatus: {
+          enabled: true,
+          nextRefreshAt: `2026-06-14T12:0${channel === 'first' ? '1' : '2'}:00.000Z`,
+          secondsUntilRefresh: channel === 'first' ? 60 : 120,
+        },
+      }),
+    ));
+    await manager.reconcile(['first', 'second']);
+
+    expect(manager.getRefreshStatuses()).toEqual([
+      {
+        channel: 'first',
+        enabled: true,
+        nextRefreshAt: '2026-06-14T12:01:00.000Z',
+        secondsUntilRefresh: 60,
+      },
+      {
+        channel: 'second',
+        enabled: true,
+        nextRefreshAt: '2026-06-14T12:02:00.000Z',
+        secondsUntilRefresh: 120,
+      },
+    ]);
+  });
+
+  it('可手動重整全部或指定 active session', async () => {
+    const sessions = new Map<string, TestSession>();
+    const manager = new DefaultSessionManager(createFactory((channel) => {
+      const session = createSession(channel);
+      sessions.set(channel, session);
+      return session;
+    }));
+    await manager.reconcile(['first', 'second']);
+
+    await expect(manager.refreshPages()).resolves.toEqual([
+      { channel: 'first', status: 'refreshed' },
+      { channel: 'second', status: 'refreshed' },
+    ]);
+    await expect(manager.refreshPages('SECOND')).resolves.toEqual([
+      { channel: 'second', status: 'refreshed' },
+    ]);
+    await expect(manager.refreshPages('missing')).resolves.toEqual([]);
+    expect(sessions.get('first')?.refreshNow).toHaveBeenCalledOnce();
+    expect(sessions.get('second')?.refreshNow).toHaveBeenCalledTimes(2);
   });
 
   it('start failure 不留 registry，且不影響其他頻道啟動', async () => {

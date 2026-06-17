@@ -475,6 +475,7 @@ function createHarness(options: HarnessOptions = {}) {
       reconcile,
       stopAll,
       getActiveChannels,
+      getRefreshStatuses: vi.fn(() => []),
       invalidate,
       captureScreenshot: vi.fn(async () => undefined),
     },
