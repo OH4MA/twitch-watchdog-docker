@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   COMMUNITY_POINTS_CLAIM_BUTTON_SELECTOR,
   COMMUNITY_POINTS_SUMMARY_SELECTOR,
+  REWARD_CLAIM_CLICK_TIMEOUT_MS,
   REWARD_BUTTON_LIKE_SELECTOR,
   RewardClaimer,
   type RewardClaimerLogger,
@@ -17,7 +18,12 @@ type MockElement = {
   readonly disabled?: boolean;
   readonly ariaLabel?: string;
   readonly className?: string;
-  readonly click?: () => Promise<void>;
+  readonly click?: (options?: { readonly timeout?: number }) => Promise<void>;
+  readonly dispatchEvent?: (
+    type: string,
+    eventInit?: unknown,
+    options?: { readonly timeout?: number },
+  ) => Promise<void>;
   readonly descendants?: readonly MockElement[];
 };
 
@@ -63,8 +69,18 @@ class MockLocator {
     return null;
   }
 
-  public async click(): Promise<void> {
-    await this.elements[0]?.click?.();
+  public async click(
+    options?: { readonly timeout?: number },
+  ): Promise<void> {
+    await this.elements[0]?.click?.(options);
+  }
+
+  public async dispatchEvent(
+    type: string,
+    eventInit?: unknown,
+    options?: { readonly timeout?: number },
+  ): Promise<void> {
+    await this.elements[0]?.dispatchEvent?.(type, eventInit, options);
   }
 }
 
@@ -134,6 +150,41 @@ describe('RewardClaimer', () => {
       claimedAt: START_TIME.toISOString(),
     });
     expect(onResult).toHaveBeenCalledWith(result);
+  });
+
+  it('點擊領取按鈕時使用短 timeout', async () => {
+    const click = vi.fn(async () => undefined);
+    const claimer = new RewardClaimer({ clock: () => START_TIME });
+
+    const result = await claimer.claimIfAvailable(
+      createPage({ primary: [{ visible: true, click }] }),
+      'streamer_timeout',
+    );
+
+    expect(result.status).toBe('claimed');
+    expect(click).toHaveBeenCalledWith({
+      timeout: REWARD_CLAIM_CLICK_TIMEOUT_MS,
+    });
+  });
+
+  it('一般 click 失敗時使用 DOM click fallback', async () => {
+    const click = vi.fn(async () => {
+      throw new Error('click action timed out');
+    });
+    const dispatchEvent = vi.fn(async () => undefined);
+    const claimer = new RewardClaimer({ clock: () => START_TIME });
+
+    const result = await claimer.claimIfAvailable(
+      createPage({ primary: [{ visible: true, click, dispatchEvent }] }),
+      'streamer_dom_fallback',
+    );
+
+    expect(result.status).toBe('claimed');
+    expect(dispatchEvent).toHaveBeenCalledWith(
+      'click',
+      undefined,
+      { timeout: REWARD_CLAIM_CLICK_TIMEOUT_MS },
+    );
   });
 
   it('primary selector 不存在時使用 summary 結構 fallback', async () => {
@@ -268,6 +319,9 @@ describe('RewardClaimer', () => {
         `token=${tokenSecret} Cookie: session=${cookieSecret}`,
       );
     });
+    const dispatchEvent = vi.fn(async () => {
+      throw new Error('fallback click failed');
+    });
     const { logger, warn } = createLogger();
     const onResult = vi.fn();
     const claimer = new RewardClaimer({
@@ -277,7 +331,7 @@ describe('RewardClaimer', () => {
     });
 
     const result = await claimer.claimIfAvailable(
-      createPage({ primary: [{ visible: true, click }] }),
+      createPage({ primary: [{ visible: true, click, dispatchEvent }] }),
       'streamer_five',
     );
 

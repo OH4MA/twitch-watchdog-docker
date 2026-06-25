@@ -23,6 +23,7 @@ const MAX_TIMER_JITTER_MS = 5_000;
 const MAX_PAGE_REFRESH_JITTER_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const CONTENT_WARNING_SETTLE_TIMEOUT_MS = 3_000;
+export const REWARD_FAILURE_RECOVERY_THRESHOLD = 10;
 
 export const CHANNEL_HEALTH_SELECTORS = Object.freeze({
   loginRequired: [
@@ -112,6 +113,17 @@ export type ChannelSessionInvalidationObserver = (
   reason: 'health_failure_threshold',
 ) => Promise<void> | void;
 
+export interface ContainerRestartRequest {
+  readonly channel: string;
+  readonly reason: 'reward_claim_failure_after_refresh';
+  readonly consecutiveFailures: number;
+  readonly requestedAt: string;
+}
+
+export type ContainerRestartRequestObserver = (
+  request: ContainerRestartRequest,
+) => Promise<void> | void;
+
 export interface ChannelSessionRefreshStatus {
   readonly channel: string;
   readonly enabled: boolean;
@@ -127,7 +139,8 @@ export interface ChannelSessionRefreshEvent {
 
 export type ChannelSessionRefreshReason =
   | 'scheduled_refresh'
-  | 'manual_refresh';
+  | 'manual_refresh'
+  | 'reward_claim_failure_threshold';
 
 export type ChannelSessionRefreshObserver = (
   event: ChannelSessionRefreshEvent,
@@ -144,6 +157,7 @@ export interface DefaultChannelSessionOptions {
   readonly healthEvaluator?: ChannelHealthEvaluator;
   readonly onInvalidated?: ChannelSessionInvalidationObserver;
   readonly onPageRefresh?: ChannelSessionRefreshObserver;
+  readonly onContainerRestartRequested?: ContainerRestartRequestObserver;
   readonly now?: () => Date;
 }
 
@@ -157,6 +171,7 @@ export interface DefaultChannelSessionFactoryOptions {
   readonly healthEvaluator?: ChannelHealthEvaluator;
   readonly onInvalidated?: ChannelSessionInvalidationObserver;
   readonly onPageRefresh?: ChannelSessionRefreshObserver;
+  readonly onContainerRestartRequested?: ContainerRestartRequestObserver;
   readonly now?: () => Date;
 }
 
@@ -196,11 +211,17 @@ export class DefaultChannelSession implements ChannelSession {
   private readonly onPageRefresh:
     | ChannelSessionRefreshObserver
     | undefined;
+  private readonly onContainerRestartRequested:
+    | ContainerRestartRequestObserver
+    | undefined;
   private readonly now: () => Date;
 
   private currentState: ChannelSessionState = 'stopped';
   private page: Page | undefined;
   private consecutiveHealthFailures = 0;
+  private consecutiveRewardFailures = 0;
+  private rewardFailureRefreshAttempted = false;
+  private containerRestartRequested = false;
   private healthTimer: NodeJS.Timeout | undefined;
   private rewardTimer: NodeJS.Timeout | undefined;
   private playbackOptimizationTimer: NodeJS.Timeout | undefined;
@@ -234,6 +255,8 @@ export class DefaultChannelSession implements ChannelSession {
       options.healthEvaluator ?? evaluateChannelHealth;
     this.onInvalidated = options.onInvalidated;
     this.onPageRefresh = options.onPageRefresh;
+    this.onContainerRestartRequested =
+      options.onContainerRestartRequested;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -254,6 +277,7 @@ export class DefaultChannelSession implements ChannelSession {
 
       this.currentState = 'starting';
       this.consecutiveHealthFailures = 0;
+      this.resetRewardFailureRecovery();
 
       try {
         const page = await this.browserManager.createPage(this.channel);
@@ -314,6 +338,7 @@ export class DefaultChannelSession implements ChannelSession {
 
       this.currentState = 'stopped';
       this.consecutiveHealthFailures = 0;
+      this.resetRewardFailureRecovery();
       safeLog(this.logger, 'info', LOG_EVENTS.WATCH_STOPPED, {
         channel: this.channel,
         reason,
@@ -529,8 +554,9 @@ export class DefaultChannelSession implements ChannelSession {
       };
     }
 
+    let result: RewardClaimResult;
     try {
-      return await this.rewardClaimer.claimIfAvailable(
+      result = await this.rewardClaimer.claimIfAvailable(
         page,
         this.channel,
       );
@@ -542,13 +568,137 @@ export class DefaultChannelSession implements ChannelSession {
         checkedAt,
         error: safeError,
       });
-      return {
+      result = {
         status: 'click_failed',
         channel: this.channel,
         checkedAt,
         error: safeError,
       };
     }
+
+    await this.handleRewardClaimResult(page, result);
+    return result;
+  }
+
+  private async handleRewardClaimResult(
+    page: Page,
+    result: RewardClaimResult,
+  ): Promise<void> {
+    if (result.status !== 'click_failed') {
+      this.resetRewardFailureRecovery();
+      return;
+    }
+
+    this.consecutiveRewardFailures += 1;
+
+    if (
+      this.consecutiveRewardFailures <
+      REWARD_FAILURE_RECOVERY_THRESHOLD
+    ) {
+      return;
+    }
+
+    safeLog(
+      this.logger,
+      'warn',
+      LOG_EVENTS.REWARD_CLAIM_FAILURE_THRESHOLD,
+      {
+        channel: this.channel,
+        consecutiveFailures: this.consecutiveRewardFailures,
+        threshold: REWARD_FAILURE_RECOVERY_THRESHOLD,
+        recoveryRefreshAttempted: this.rewardFailureRefreshAttempted,
+        error: result.error,
+      },
+    );
+
+    if (!this.rewardFailureRefreshAttempted) {
+      await this.refreshAfterRewardFailures(page);
+      return;
+    }
+
+    this.requestContainerRestartAfterRewardFailures();
+  }
+
+  private async refreshAfterRewardFailures(page: Page): Promise<void> {
+    this.rewardFailureRefreshAttempted = true;
+    safeLog(
+      this.logger,
+      'warn',
+      LOG_EVENTS.REWARD_CLAIM_FAILURE_RECOVERY_REFRESH,
+      {
+        channel: this.channel,
+        threshold: REWARD_FAILURE_RECOVERY_THRESHOLD,
+        reason: 'reward_claim_failure_threshold',
+      },
+    );
+
+    if (page.isClosed()) {
+      this.requestContainerRestartAfterRewardFailures();
+      return;
+    }
+
+    try {
+      this.notifyPageRefresh('reward_claim_failure_threshold');
+      await this.reloadPage(page, 'reward_claim_failure_threshold');
+      this.consecutiveRewardFailures = 0;
+      safeLog(this.logger, 'info', 'page_refreshed', {
+        channel: this.channel,
+        reason: 'reward_claim_failure_threshold',
+      });
+    } catch (error: unknown) {
+      safeLog(this.logger, 'warn', 'page_reload_failed', {
+        channel: this.channel,
+        reason: 'reward_claim_failure_threshold',
+        error: safeErrorMessage(error),
+      });
+      this.requestContainerRestartAfterRewardFailures();
+    }
+  }
+
+  private requestContainerRestartAfterRewardFailures(): void {
+    if (this.containerRestartRequested) {
+      return;
+    }
+
+    this.containerRestartRequested = true;
+    const request: ContainerRestartRequest = {
+      channel: this.channel,
+      reason: 'reward_claim_failure_after_refresh',
+      consecutiveFailures: this.consecutiveRewardFailures,
+      requestedAt: this.now().toISOString(),
+    };
+    safeLog(
+      this.logger,
+      'error',
+      LOG_EVENTS.CONTAINER_RESTART_REQUESTED,
+      {
+        channel: request.channel,
+        reason: request.reason,
+        consecutiveFailures: request.consecutiveFailures,
+        requestedAt: request.requestedAt,
+      },
+    );
+
+    const observer = this.onContainerRestartRequested;
+    if (observer === undefined) {
+      return;
+    }
+
+    void Promise.resolve()
+      .then(() => observer(request))
+      .catch((error: unknown) => {
+        safeLog(this.logger, 'error', 'container_restart_request_failed', {
+          channel: this.channel,
+          reason: request.reason,
+          error: safeErrorMessage(error),
+        });
+      });
+  }
+
+  private resetRewardFailureRecovery(): void {
+    this.consecutiveRewardFailures = 0;
+    this.rewardFailureRefreshAttempted = false;
+    this.containerRestartRequested = false;
   }
 
   private startTimers(): void {

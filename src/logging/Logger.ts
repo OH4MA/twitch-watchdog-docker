@@ -14,6 +14,10 @@ export const LOG_EVENTS = {
   WATCH_STOPPED: 'watch_stopped',
   REWARD_CLAIMED: 'reward_claimed',
   REWARD_CLAIM_FAILED: 'reward_claim_failed',
+  REWARD_CLAIM_FAILURE_THRESHOLD: 'reward_claim_failure_threshold',
+  REWARD_CLAIM_FAILURE_RECOVERY_REFRESH:
+    'reward_claim_failure_recovery_refresh',
+  CONTAINER_RESTART_REQUESTED: 'container_restart_requested',
   BROWSER_RESTARTED: 'browser_restarted',
   PAGE_HEALTH_FAILED: 'page_health_failed',
   SERVICE_STOPPED: 'service_stopped',

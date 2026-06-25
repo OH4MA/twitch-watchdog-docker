@@ -6,6 +6,7 @@ import {
   CHANNEL_HEALTH_SELECTORS,
   DefaultChannelSession,
   DefaultChannelSessionFactory,
+  REWARD_FAILURE_RECOVERY_THRESHOLD,
   createChannelUrl,
   evaluateChannelHealth,
   type ChannelHealthResult,
@@ -578,6 +579,179 @@ describe('DefaultChannelSession', () => {
     });
     expect(session.state).toBe('watching');
     expect(browser.closePage).not.toHaveBeenCalled();
+
+    await session.stop('test_complete');
+  });
+
+  it('reward 連續失敗滿門檻時重整該頻道頁面', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer(async (_page, channel) => ({
+      status: 'click_failed',
+      channel,
+      checkedAt: NOW.toISOString(),
+      error: 'click failed',
+    }));
+    const logs = createLogger();
+    const onPageRefresh = vi.fn(async () => undefined);
+    const onContainerRestartRequested = vi.fn(async () => undefined);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      logger: logs.logger,
+      onPageRefresh,
+      onContainerRestartRequested,
+      now: () => NOW,
+    });
+    await session.start();
+
+    for (let index = 0; index < REWARD_FAILURE_RECOVERY_THRESHOLD; index += 1) {
+      await expect(session.tickRewardClaim()).resolves.toMatchObject({
+        status: 'click_failed',
+      });
+    }
+
+    expect(mockPage.reload).toHaveBeenCalledOnce();
+    expect(session.state).toBe('watching');
+    expect(onContainerRestartRequested).not.toHaveBeenCalled();
+    expect(logs.warn).toHaveBeenCalledWith(
+      LOG_EVENTS.REWARD_CLAIM_FAILURE_THRESHOLD,
+      expect.objectContaining({
+        channel: CHANNEL,
+        consecutiveFailures: REWARD_FAILURE_RECOVERY_THRESHOLD,
+      }),
+    );
+    expect(logs.warn).toHaveBeenCalledWith(
+      LOG_EVENTS.REWARD_CLAIM_FAILURE_RECOVERY_REFRESH,
+      {
+        channel: CHANNEL,
+        threshold: REWARD_FAILURE_RECOVERY_THRESHOLD,
+        reason: 'reward_claim_failure_threshold',
+      },
+    );
+    await vi.waitFor(() => {
+      expect(onPageRefresh).toHaveBeenCalledWith({
+        channel: CHANNEL,
+        reason: 'reward_claim_failure_threshold',
+        startedAt: NOW.toISOString(),
+      });
+    });
+
+    await session.stop('test_complete');
+  });
+
+  it('reward 重整後再次連續失敗會要求容器重啟', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer(async (_page, channel) => ({
+      status: 'click_failed',
+      channel,
+      checkedAt: NOW.toISOString(),
+      error: 'click failed',
+    }));
+    const logs = createLogger();
+    const onContainerRestartRequested = vi.fn(async () => undefined);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      logger: logs.logger,
+      onContainerRestartRequested,
+      now: () => NOW,
+    });
+    await session.start();
+
+    for (
+      let index = 0;
+      index < REWARD_FAILURE_RECOVERY_THRESHOLD * 2;
+      index += 1
+    ) {
+      await session.tickRewardClaim();
+    }
+    await session.tickRewardClaim();
+
+    expect(mockPage.reload).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(onContainerRestartRequested).toHaveBeenCalledOnce();
+    });
+    expect(onContainerRestartRequested).toHaveBeenCalledWith({
+      channel: CHANNEL,
+      reason: 'reward_claim_failure_after_refresh',
+      consecutiveFailures: REWARD_FAILURE_RECOVERY_THRESHOLD,
+      requestedAt: NOW.toISOString(),
+    });
+    expect(logs.error).toHaveBeenCalledWith(
+      LOG_EVENTS.CONTAINER_RESTART_REQUESTED,
+      {
+        channel: CHANNEL,
+        reason: 'reward_claim_failure_after_refresh',
+        consecutiveFailures: REWARD_FAILURE_RECOVERY_THRESHOLD,
+        requestedAt: NOW.toISOString(),
+      },
+    );
+
+    await session.stop('test_complete');
+  });
+
+  it('reward 失敗後成功或 not_found 會重置復原狀態', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const outcomes: RewardClaimResult[] = [
+      ...Array.from(
+        { length: REWARD_FAILURE_RECOVERY_THRESHOLD - 1 },
+        () => ({
+          status: 'click_failed' as const,
+          channel: CHANNEL,
+          checkedAt: NOW.toISOString(),
+          error: 'click failed',
+        }),
+      ),
+      {
+        status: 'not_found',
+        channel: CHANNEL,
+        checkedAt: NOW.toISOString(),
+      },
+      ...Array.from(
+        { length: REWARD_FAILURE_RECOVERY_THRESHOLD - 1 },
+        () => ({
+          status: 'click_failed' as const,
+          channel: CHANNEL,
+          checkedAt: NOW.toISOString(),
+          error: 'click failed',
+        }),
+      ),
+      {
+        status: 'claimed',
+        channel: CHANNEL,
+        claimedAt: NOW.toISOString(),
+      },
+    ];
+    const rewards = createRewardClaimer(async () => {
+      const next = outcomes.shift();
+      if (next === undefined) {
+        throw new Error('unexpected reward claim');
+      }
+      return next;
+    });
+    const onContainerRestartRequested = vi.fn(async () => undefined);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      onContainerRestartRequested,
+    });
+    await session.start();
+
+    while (outcomes.length > 0) {
+      await session.tickRewardClaim();
+    }
+
+    expect(mockPage.reload).not.toHaveBeenCalled();
+    expect(onContainerRestartRequested).not.toHaveBeenCalled();
 
     await session.stop('test_complete');
   });

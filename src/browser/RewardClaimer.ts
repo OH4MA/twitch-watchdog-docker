@@ -16,6 +16,7 @@ export const COMMUNITY_POINTS_SUMMARY_SELECTOR =
 export const REWARD_BUTTON_LIKE_SELECTOR =
   'button:not([type="submit"]), [role="button"], input[type="button"]';
 export const REWARD_CLAIM_COOLDOWN_MS = 60_000;
+export const REWARD_CLAIM_CLICK_TIMEOUT_MS = 3_000;
 
 export type RewardClaimResult =
   | { status: 'claimed'; channel: string; claimedAt: string }
@@ -102,7 +103,7 @@ export const RewardClaimer = class RewardClaimerImplementation
     }
 
     try {
-      await claimButton.click();
+      await clickClaimButton(claimButton);
     } catch (error: unknown) {
       return this.failedResult(channel, checkedAtIso, error);
     }
@@ -234,6 +235,22 @@ async function firstClickable(
   }
 
   return null;
+}
+
+async function clickClaimButton(claimButton: Locator): Promise<void> {
+  try {
+    await claimButton.click({ timeout: REWARD_CLAIM_CLICK_TIMEOUT_MS });
+  } catch (error: unknown) {
+    try {
+      await claimButton.dispatchEvent(
+        'click',
+        undefined,
+        { timeout: REWARD_CLAIM_CLICK_TIMEOUT_MS },
+      );
+    } catch {
+      throw error;
+    }
+  }
 }
 
 function isDestructiveButton(className: string | null): boolean {

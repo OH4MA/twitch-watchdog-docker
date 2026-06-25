@@ -12,6 +12,8 @@ Twitch Watchdog 是可用 Docker 長時間執行的 Twitch 觀看輔助服務。
 - 自動確認 Twitch 直播頁的內容警示（`Start Watching`）後繼續觀看。
   Automatically accepts Twitch channel content warnings (`Start Watching`) before continuing playback.
 - 自動領取 Bonus Channel Points。
+- Bonus Channel Points 連續領取失敗 10 次時，會先重整該頻道頁面；重整後若再次連續失敗 10 次，會結束程序並交由 Docker restart policy 重啟容器。
+  If Bonus Channel Points claiming fails 10 times in a row, the service first refreshes that channel page; if it fails 10 more times after the refresh, it exits so Docker can restart the container through the configured restart policy.
 - 預設將直播畫質維持在 `160p` 並靜音，降低長時間執行資源用量。
 - 可選用 Telegram Bot 查詢狀態、管理頻道、暫停/恢復排程與取得截圖。
 
@@ -123,6 +125,14 @@ docker compose config
 docker compose build
 docker compose up -d
 docker compose logs -f twitch-watchdog
+```
+
+服務 log 以一行一筆 JSON 輸出到 stdout，可使用 Docker logs 查看與保存：
+Service logs are emitted as JSON Lines to stdout and can be viewed or retained through Docker logs:
+
+```bash
+docker compose logs -f twitch-watchdog
+docker compose logs --no-log-prefix twitch-watchdog
 ```
 
 常用操作：

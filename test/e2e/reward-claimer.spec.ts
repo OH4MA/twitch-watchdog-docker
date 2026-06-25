@@ -124,21 +124,25 @@ test.describe('RewardClaimer mock pages', () => {
     await expect(balanceButton).toHaveAttribute('data-click-count', '0');
   });
 
-  test('真實 locator 點擊失敗時回傳 click_failed', async ({ page }) => {
+  test('真實 locator 一般點擊失敗時使用 DOM click fallback', async ({
+    page,
+  }) => {
     await page.goto(mockPageUrl('reward-available.html'));
     await page.setDefaultTimeout(150);
-    await page
-      .locator('[data-test-selector="community-points-claim-button"]')
-      .evaluate((element) => {
-        (element as HTMLElement).style.pointerEvents = 'none';
-      });
+    const button = page.locator(
+      '[data-test-selector="community-points-claim-button"]',
+    );
+    await button.evaluate((element) => {
+      (element as HTMLElement).style.pointerEvents = 'none';
+    });
 
     const result = await new RewardClaimer().claimIfAvailable(
       page,
       'click_failure_channel',
     );
 
-    expect(result.status).toBe('click_failed');
+    expect(result.status).toBe('claimed');
+    await expect(button).toHaveAttribute('data-click-count', '1');
   });
 
   test('成功後同一 channel 套用 60 秒冷卻', async ({ page }) => {

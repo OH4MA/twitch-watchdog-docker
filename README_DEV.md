@@ -85,6 +85,30 @@ macOS managed sandbox 可能阻擋本機 Playwright Firefox/Chromium 的 Mach po
 
 ## 資源觀察
 
+服務 log 以 JSON Lines 寫到 stdout；正式 Docker 部署可直接使用 Docker logs 查詢。
+Service logs are written as JSON Lines to stdout; production Docker deployments can inspect them through Docker logs.
+
+常用 log 查詢：
+Common log queries:
+
+```bash
+docker compose logs -f twitch-watchdog
+docker compose logs --no-log-prefix twitch-watchdog
+docker compose logs --no-log-prefix twitch-watchdog | rg 'reward_claim_failure|container_restart_requested'
+```
+
+忠誠點數領取復原相關事件：
+Reward claim recovery events:
+
+- `reward_claim_failed`：單次忠誠點數領取失敗。
+  Single reward claim attempt failed.
+- `reward_claim_failure_threshold`：同一頻道連續失敗達復原門檻。
+  A channel reached the consecutive failure recovery threshold.
+- `reward_claim_failure_recovery_refresh`：因連續失敗觸發該頻道頁面重整。
+  A channel page refresh was triggered by consecutive reward failures.
+- `container_restart_requested`：重整後仍連續失敗，程序將以非 0 狀態結束，交由 Docker restart policy 重啟容器。
+  Reward failures continued after the recovery refresh, so the process exits non-zero and Docker restart policy restarts the container.
+
 容器資源：
 
 ```bash
