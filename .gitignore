@@ -23,6 +23,7 @@ doc/tasks/
 
 .agents/
 .codex/
+.codebase-memory/
 
 benchmark*.csv
 *.benchmark.csv
