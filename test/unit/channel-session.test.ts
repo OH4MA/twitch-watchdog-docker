@@ -22,7 +22,8 @@ type HealthMarker =
   | 'loginRequired'
   | 'liveContent'
   | 'error'
-  | 'offline';
+  | 'offline'
+  | 'contentWarning';
 
 interface MockPageControls {
   readonly page: Page;
@@ -30,6 +31,7 @@ interface MockPageControls {
   readonly goto: ReturnType<typeof vi.fn>;
   readonly reload: ReturnType<typeof vi.fn>;
   readonly screenshot: ReturnType<typeof vi.fn>;
+  readonly contentWarningClickCount: () => number;
   setMarker(marker: HealthMarker | undefined): void;
   setUrl(url: string): void;
   setClosed(closed: boolean): void;
@@ -75,10 +77,12 @@ function createMockPage(input: {
   readonly finalUrl?: string;
   readonly reloadError?: Error;
   readonly reloadImplementation?: () => Promise<null>;
+  readonly contentWarningClickError?: Error;
 } = {}): MockPageControls {
   let marker = input.marker;
   let currentUrl = input.url ?? 'about:blank';
   let closed = false;
+  let contentWarningClickCount = 0;
 
   const locator = (selector: string): Locator => {
     const visible =
@@ -90,6 +94,23 @@ function createMockPage(input: {
       },
       async isVisible(): Promise<boolean> {
         return visible;
+      },
+      async click(): Promise<void> {
+        if (
+          marker === 'contentWarning' &&
+          selector === CHANNEL_HEALTH_SELECTORS.contentWarning
+        ) {
+          if (input.contentWarningClickError !== undefined) {
+            throw input.contentWarningClickError;
+          }
+          contentWarningClickCount += 1;
+          marker = 'liveContent';
+        }
+      },
+      async waitFor(): Promise<void> {
+        if (!visible) {
+          throw new Error('locator is not visible');
+        }
       },
     };
     return mockLocator as unknown as Locator;
@@ -130,6 +151,7 @@ function createMockPage(input: {
     goto,
     reload,
     screenshot,
+    contentWarningClickCount: () => contentWarningClickCount,
     setMarker(value): void {
       marker = value;
     },
@@ -339,6 +361,34 @@ describe('DefaultChannelSession', () => {
     await session.stop('test_complete');
   });
 
+  it('start 遇到 Twitch 內容警示時會先按 Start Watching 再進入 watching', async () => {
+    const mockPage = createMockPage({ marker: 'contentWarning' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer();
+    const logs = createLogger();
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      logger: logs.logger,
+    });
+
+    await session.start();
+
+    expect(mockPage.contentWarningClickCount()).toBe(1);
+    expect(session.state).toBe('watching');
+    expect(logs.info).toHaveBeenCalledWith(
+      'content_warning_accepted',
+      {
+        channel: CHANNEL,
+        reason: 'start',
+      },
+    );
+
+    await session.stop('test_complete');
+  });
+
   it('觀看中可直接從現有 page 擷取 viewport PNG', async () => {
     const mockPage = createMockPage({ marker: 'liveContent' });
     const browser = createBrowserManager(mockPage.page);
@@ -386,6 +436,43 @@ describe('DefaultChannelSession', () => {
     });
 
     await session.stop('test_complete');
+  });
+
+  it('健康檢查遇到可確認的 Twitch 內容警示時會按掉並回到 healthy', async () => {
+    const mockPage = createMockPage({ marker: 'contentWarning' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer();
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+    });
+    await session.start();
+    mockPage.setMarker('contentWarning');
+
+    await expect(session.checkHealth()).resolves.toEqual({
+      healthy: true,
+      reason: 'live',
+    });
+    expect(mockPage.contentWarningClickCount()).toBe(2);
+
+    await session.stop('test_complete');
+  });
+
+  it('健康檢查遇到無法確認的 Twitch 內容警示時回報 content_warning', async () => {
+    const mockPage = createMockPage({
+      marker: 'contentWarning',
+      url: TARGET_URL,
+      contentWarningClickError: new Error('button blocked'),
+    });
+
+    await expect(
+      evaluateChannelHealth(mockPage.page, TARGET_URL),
+    ).resolves.toEqual({
+      healthy: false,
+      reason: 'content_warning',
+    });
   });
 
   it('URL mismatch 與 page closed 回傳明確原因', async () => {
@@ -613,6 +700,29 @@ describe('DefaultChannelSession', () => {
         reason: 'scheduled_refresh',
         startedAt: expect.any(String),
       });
+    });
+
+    await session.stop('test_complete');
+  });
+
+  it('重整後遇到 Twitch 內容警示時會重新按 Start Watching', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+    });
+    await session.start();
+
+    mockPage.setMarker('contentWarning');
+    await expect(session.refreshNow()).resolves.toBe(true);
+
+    expect(mockPage.contentWarningClickCount()).toBe(1);
+    await expect(session.checkHealth()).resolves.toEqual({
+      healthy: true,
+      reason: 'live',
     });
 
     await session.stop('test_complete');

@@ -8,6 +8,7 @@
 - `src/credentials`：storageState 與 Twitch API 設定檢查。
 - `src/twitch`：Twitch Helix API client 與 live status provider。
 - `src/browser`：Playwright browser/context/page、觀看 session、畫質最佳化與 Bonus Points 領取。
+  It also handles Twitch content-warning confirmation gates before playback health checks.
 - `src/sessions`：多頻道 session reconcile。
 - `src/scheduler`：輪詢排程、stream selection 與不可重入控制。
 - `src/telegram`：Telegram Bot API 與指令處理。
@@ -108,6 +109,8 @@ Benchmark 輸出屬於本機開發產物，已由 `.gitignore` 排除。
 - `storage-state.json`、`.env`、`config.yml`、token、cookie 與 Telegram Chat ID 不得提交。
 - Twitch 播放器 DOM 不是穩定公開 API；selector 變更應集中在 `src/browser` 並以 mock pages 覆蓋。
 - 播放最佳化或 Bonus Points 領取失敗不得中止觀看 session。
+- Twitch 內容警示確認失敗應回報明確健康檢查原因，不得誤判為登入或離線。
+  Content-warning confirmation failures should report a specific health reason and must not be treated as login or offline states.
 - Twitch API 暫時失敗時，不得把既有 active session 全部當成離線關閉。
 
 ## 版本控制注意事項

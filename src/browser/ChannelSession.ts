@@ -22,6 +22,7 @@ const DEFAULT_HEALTH_FAILURE_THRESHOLD = 3;
 const MAX_TIMER_JITTER_MS = 5_000;
 const MAX_PAGE_REFRESH_JITTER_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const CONTENT_WARNING_SETTLE_TIMEOUT_MS = 3_000;
 
 export const CHANNEL_HEALTH_SELECTORS = Object.freeze({
   loginRequired: [
@@ -44,6 +45,13 @@ export const CHANNEL_HEALTH_SELECTORS = Object.freeze({
     '[data-a-target="offline-channel-main-content"]',
     '[data-channel-health="offline"]',
   ].join(', '),
+  contentWarning: [
+    '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
+    '[data-a-target="content-warning-start-watching-button"]',
+    '[data-channel-health="content-warning"]',
+    'button:has-text("Start Watching")',
+    'button:has-text("開始觀看")',
+  ].join(', '),
 });
 
 export type ChannelSessionState =
@@ -61,6 +69,7 @@ export type ChannelHealthFailureReason =
   | 'login_required'
   | 'error_page'
   | 'offline'
+  | 'content_warning'
   | 'live_content_missing'
   | 'health_check_error';
 
@@ -256,6 +265,7 @@ export class DefaultChannelSession implements ChannelSession {
         if (!isExpectedChannelUrl(page.url(), this.targetUrl)) {
           throw new Error('頻道頁面導向非預期 Twitch URL');
         }
+        await this.acceptContentWarningIfPresent(page, 'start');
         await this.optimizePlayback(page);
 
         this.currentState = 'watching';
@@ -588,6 +598,27 @@ export class DefaultChannelSession implements ChannelSession {
     }
   }
 
+  private async acceptContentWarningIfPresent(
+    page: Page,
+    reason: string,
+  ): Promise<void> {
+    const result = await acceptContentWarning(page);
+    if (result === 'not_present') {
+      return;
+    }
+    if (result === 'accepted') {
+      safeLog(this.logger, 'info', 'content_warning_accepted', {
+        channel: this.channel,
+        reason,
+      });
+      return;
+    }
+    safeLog(this.logger, 'warn', 'content_warning_accept_failed', {
+      channel: this.channel,
+      reason,
+    });
+  }
+
   private scheduleHealthCheck(): void {
     if (!this.shouldScheduleWork()) {
       return;
@@ -720,6 +751,7 @@ export class DefaultChannelSession implements ChannelSession {
 
   private async runPageReload(page: Page, reason: string): Promise<void> {
     await page.reload();
+    await this.acceptContentWarningIfPresent(page, reason);
     await this.optimizePlayback(page);
     safeLog(this.logger, 'debug', 'page_reloaded', {
       channel: this.channel,
@@ -876,6 +908,17 @@ export async function evaluateChannelHealth(
       return { healthy: false, reason: 'offline' };
     }
 
+    const contentWarningResult = await acceptContentWarning(page);
+    if (
+      contentWarningResult === 'accepted' &&
+      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.liveContent))
+    ) {
+      return { healthy: true, reason: 'live' };
+    }
+    if (contentWarningResult !== 'not_present') {
+      return { healthy: false, reason: 'content_warning' };
+    }
+
     if (
       await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.liveContent))
     ) {
@@ -889,6 +932,32 @@ export async function evaluateChannelHealth(
       reason: 'health_check_error',
       error: safeErrorMessage(error),
     };
+  }
+}
+
+type ContentWarningAcceptResult = 'not_present' | 'accepted' | 'blocked';
+
+async function acceptContentWarning(
+  page: Page,
+): Promise<ContentWarningAcceptResult> {
+  const button = page.locator(CHANNEL_HEALTH_SELECTORS.contentWarning).first();
+  if (!(await isVisible(button))) {
+    return 'not_present';
+  }
+
+  try {
+    await button.click({ timeout: CONTENT_WARNING_SETTLE_TIMEOUT_MS });
+    await page
+      .locator(CHANNEL_HEALTH_SELECTORS.liveContent)
+      .first()
+      .waitFor({
+        state: 'visible',
+        timeout: CONTENT_WARNING_SETTLE_TIMEOUT_MS,
+      })
+      .catch(() => undefined);
+    return 'accepted';
+  } catch {
+    return 'blocked';
   }
 }
 

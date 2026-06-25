@@ -9,11 +9,14 @@ Twitch Watchdog 是可用 Docker 長時間執行的 Twitch 觀看輔助服務。
 - 監控多個 Twitch 頻道開台狀態。
 - 依 `channels` 順序與 `max_concurrent_streams` 決定實際觀看頻道。
 - 使用 Firefox 播放 Twitch直播。
+- 自動確認 Twitch 直播頁的內容警示（`Start Watching`）後繼續觀看。
+  Automatically accepts Twitch channel content warnings (`Start Watching`) before continuing playback.
 - 自動領取 Bonus Channel Points。
 - 預設將直播畫質維持在 `160p` 並靜音，降低長時間執行資源用量。
 - 可選用 Telegram Bot 查詢狀態、管理頻道、暫停/恢復排程與取得截圖。
 
 不支援 Twitch Drops 自動領取、自動輸入帳號密碼、多帳號批量管理、CAPTCHA 繞過、反偵測或規避平台限制。
+Accepting Twitch content warnings only clicks the visible confirmation for the logged-in account; it does not bypass login, age gates, CAPTCHA, or platform restrictions.
 
 ## 前置需求
 

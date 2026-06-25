@@ -22,6 +22,19 @@ test.describe('ChannelSession mock pages', () => {
     });
   });
 
+  test('content-warning 頁面會確認後判定 healthy', async ({ page }) => {
+    const url = mockPageUrl('content-warning.html');
+    await page.goto(url);
+
+    await expect(evaluateChannelHealth(page, url)).resolves.toEqual({
+      healthy: true,
+      reason: 'live',
+    });
+    await expect(
+      page.locator('[data-a-target="video-player"]'),
+    ).toBeVisible();
+  });
+
   test('login-required 頁面回報 login_required', async ({ page }) => {
     const url = mockPageUrl('login-required.html');
     await page.goto(url);
