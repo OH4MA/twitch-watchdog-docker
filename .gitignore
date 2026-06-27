@@ -7,7 +7,6 @@ blob-report/
 
 .env
 .env.*
-!.env.example
 config.yml
 
 data/browser-state/

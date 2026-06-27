@@ -1,6 +1,7 @@
 import type {
   AppConfig,
   BrowserConfig,
+  DiscordConfig,
   LogLevel,
   TelegramConfig,
   TwitchApiConfig,
@@ -16,6 +17,7 @@ export interface TestConfigOverrides {
   readonly twitchApi?: Partial<TwitchApiConfig>;
   readonly browser?: Partial<BrowserConfig>;
   readonly telegram?: Partial<TelegramConfig>;
+  readonly discord?: Partial<DiscordConfig>;
 }
 
 export function createTestConfig(
@@ -39,6 +41,7 @@ export function createTestConfig(
       navigationTimeoutMs: 30_000,
       pageHealthCheckIntervalSeconds: 60,
       rewardCheckIntervalSeconds: 30,
+      pageRefreshIntervalSeconds: 300,
       restartOnCrash: true,
       streamQuality: '160p',
       enforceStreamQualitySeconds: 120,
@@ -57,6 +60,16 @@ export function createTestConfig(
       allowedChatIds: [],
       pollingTimeoutSeconds: 25,
       ...overrides.telegram,
+    },
+    discord: {
+      enabled: false,
+      botToken: '',
+      applicationId: '',
+      guildId: '',
+      allowedChannelIds: [],
+      allowDirectMessages: false,
+      allowedUserIds: [],
+      ...overrides.discord,
     },
   };
 }

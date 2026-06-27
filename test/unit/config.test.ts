@@ -65,7 +65,30 @@ describe('YamlConfigLoader', () => {
         allowedChatIds: [],
         pollingTimeoutSeconds: 25,
       },
+      discord: {
+        enabled: false,
+        botToken: '',
+        applicationId: '',
+        guildId: '',
+        allowedChannelIds: [],
+        allowDirectMessages: false,
+        allowedUserIds: [],
+      },
     });
+  });
+
+  it('config.example.yml 是可直接複製使用的單檔設定範例', async () => {
+    const config = await new YamlConfigLoader().load(
+      fileURLToPath(new URL('../../config.example.yml', import.meta.url)),
+      {},
+    );
+
+    expect(config.twitchApi.clientId).toBe('your_twitch_client_id');
+    expect(config.twitchApi.clientSecret).toBe(
+      'your_twitch_client_secret',
+    );
+    expect(config.telegram.enabled).toBe(false);
+    expect(config.discord.enabled).toBe(false);
   });
 
   it('支援正式 YAML 的引號、註解與 flow sequence', async () => {
@@ -120,6 +143,15 @@ twitch_api:
         botToken: '',
         allowedChatIds: [],
         pollingTimeoutSeconds: 25,
+      },
+      discord: {
+        enabled: false,
+        botToken: '',
+        applicationId: '',
+        guildId: '',
+        allowedChannelIds: [],
+        allowDirectMessages: false,
+        allowedUserIds: [],
       },
     });
     expect(debug).toHaveBeenCalledWith('config_concurrency_clamped', {
@@ -245,6 +277,78 @@ twitch_api:
       TELEGRAM_ALLOWED_CHAT_IDS: 'not-a-chat',
     }],
   ])('Telegram %s 時拒絕設定', async (_name, env) => {
+    await expect(loadFixture('defaults.yml', env)).rejects.toBeInstanceOf(
+      ConfigValidationError,
+    );
+  });
+
+  it('可由環境變數啟用 Discord 並解析多個 channel ID', async () => {
+    const config = await loadFixture('defaults.yml', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_BOT_TOKEN: 'discord-token',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+      DISCORD_GUILD_ID: '987654321098765432',
+      DISCORD_ALLOWED_CHANNEL_IDS: '111111111111111111, 222222222222222222,111111111111111111',
+      DISCORD_ALLOW_DIRECT_MESSAGES: 'true',
+      DISCORD_ALLOWED_USER_IDS: '333333333333333333,333333333333333333',
+    });
+
+    expect(config.discord).toEqual({
+      enabled: true,
+      botToken: 'discord-token',
+      applicationId: '123456789012345678',
+      guildId: '987654321098765432',
+      allowedChannelIds: [
+        '111111111111111111',
+        '222222222222222222',
+      ],
+      allowDirectMessages: true,
+      allowedUserIds: ['333333333333333333'],
+    });
+  });
+
+  it.each([
+    ['缺少 bot token', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+      DISCORD_ALLOWED_CHANNEL_IDS: '111111111111111111',
+    }],
+    ['缺少 application ID', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_ALLOWED_CHANNEL_IDS: '111111111111111111',
+    }],
+    ['application ID 格式錯誤', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_APPLICATION_ID: 'not-a-snowflake',
+      DISCORD_ALLOWED_CHANNEL_IDS: '111111111111111111',
+    }],
+    ['缺少 channel ID', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+    }],
+    ['啟用私訊但缺少 user ID', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+      DISCORD_ALLOW_DIRECT_MESSAGES: 'true',
+    }],
+    ['channel ID 格式錯誤', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+      DISCORD_ALLOWED_CHANNEL_IDS: 'not-a-channel',
+    }],
+    ['user ID 格式錯誤', {
+      DISCORD_ENABLED: 'true',
+      DISCORD_BOT_TOKEN: 'token',
+      DISCORD_APPLICATION_ID: '123456789012345678',
+      DISCORD_ALLOW_DIRECT_MESSAGES: 'true',
+      DISCORD_ALLOWED_USER_IDS: 'not-a-user',
+    }],
+  ])('Discord %s 時拒絕設定', async (_name, env) => {
     await expect(loadFixture('defaults.yml', env)).rejects.toBeInstanceOf(
       ConfigValidationError,
     );
@@ -462,6 +566,9 @@ twitch_api:
     expect(Object.isFrozen(config.browser)).toBe(true);
     expect(Object.isFrozen(config.telegram)).toBe(true);
     expect(Object.isFrozen(config.telegram.allowedChatIds)).toBe(true);
+    expect(Object.isFrozen(config.discord)).toBe(true);
+    expect(Object.isFrozen(config.discord.allowedChannelIds)).toBe(true);
+    expect(Object.isFrozen(config.discord.allowedUserIds)).toBe(true);
     expect(() => {
       (config.channels as string[]).push('another_channel');
     }).toThrow(TypeError);

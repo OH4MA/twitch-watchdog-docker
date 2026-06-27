@@ -70,6 +70,9 @@ browser:
   page_health_check_interval_seconds: 30
   reward_check_interval_seconds: 15
   restart_on_crash: true
+twitch_api:
+  client_id: docker-smoke-client-id
+  access_token: docker-smoke-access-token
 YAML
 cat >"${SMOKE_STATE_DIR}/storage-state.json" <<'JSON'
 {"cookies":[],"origins":[]}
@@ -78,9 +81,7 @@ chmod 755 "${SMOKE_DIR}" "${SMOKE_STATE_DIR}"
 chmod 666 "${SMOKE_CONFIG_PATH}"
 chmod 644 "${SMOKE_STATE_DIR}/storage-state.json"
 
-TWITCH_CLIENT_ID=docker-smoke-client-id \
-TWITCH_ACCESS_TOKEN=docker-smoke-access-token \
-  docker compose -f docker-compose.yml config --format json \
+docker compose -f docker-compose.yml config --format json \
   | node test/docker/verify-compose.mjs service
 
 "${COMPOSE[@]}" config --format json \

@@ -265,6 +265,7 @@ export function safeErrorMessage(
     config.twitchApi.clientSecret,
     config.storageStatePath,
     config.telegram.botToken,
+    config.discord.botToken,
   ]) {
     if ((sensitiveValue ?? '').length > 0) {
       safeMessage = safeMessage.replaceAll(sensitiveValue, '[REDACTED]');

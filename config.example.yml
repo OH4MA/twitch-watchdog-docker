@@ -8,6 +8,12 @@ headless: true
 storage_state_path: /data/browser-state/storage-state.json
 log_level: info
 
+twitch_api:
+  client_id: your_twitch_client_id
+  client_secret: your_twitch_client_secret
+  # access_token is optional and only used when client_secret is empty.
+  access_token: ""
+
 browser:
   navigation_timeout_ms: 30000
   page_health_check_interval_seconds: 60
@@ -23,3 +29,30 @@ browser:
   block_fonts: false
   block_known_tracking: false
   resource_telemetry_interval_seconds: 300
+
+telegram:
+  enabled: false
+  bot_token: ""
+  # Telegram chat IDs must be quoted integer strings, not @usernames.
+  # Example:
+  # allowed_chat_ids:
+  #   - "5009748887"
+  #   - "-1001234567890"
+  allowed_chat_ids: []
+  polling_timeout_seconds: 25
+
+discord:
+  enabled: false
+  bot_token: ""
+  application_id: ""
+  guild_id: ""
+  # Discord IDs must be quoted numeric snowflake IDs, not names like #general.
+  # Example:
+  # allowed_channel_ids:
+  #   - "1520430059771400353"
+  allowed_channel_ids: []
+  allow_direct_messages: false
+  # Example:
+  # allowed_user_ids:
+  #   - "678200367300870154"
+  allowed_user_ids: []

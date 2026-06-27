@@ -49,6 +49,7 @@ const CONFIG: AppConfig = Object.freeze({
     navigationTimeoutMs: 30_000,
     pageHealthCheckIntervalSeconds: 60,
     rewardCheckIntervalSeconds: 30,
+    pageRefreshIntervalSeconds: 300,
     restartOnCrash: true,
     streamQuality: '160p',
     enforceStreamQualitySeconds: 120,
@@ -65,6 +66,15 @@ const CONFIG: AppConfig = Object.freeze({
     botToken: '',
     allowedChatIds: Object.freeze([]),
     pollingTimeoutSeconds: 25,
+  }),
+  discord: Object.freeze({
+    enabled: false,
+    botToken: '',
+    applicationId: '',
+    guildId: '',
+    allowedChannelIds: Object.freeze([]),
+    allowDirectMessages: false,
+    allowedUserIds: Object.freeze([]),
   }),
 });
 

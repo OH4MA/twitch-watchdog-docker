@@ -36,30 +36,6 @@ assert(
   'CONFIG_PATH 不正確',
 );
 assert(
-  Object.hasOwn(service.environment ?? {}, 'TWITCH_CLIENT_ID'),
-  '缺少 TWITCH_CLIENT_ID environment',
-);
-assert(
-  Object.hasOwn(service.environment ?? {}, 'TWITCH_ACCESS_TOKEN'),
-  '缺少 TWITCH_ACCESS_TOKEN environment',
-);
-assert(
-  Object.hasOwn(service.environment ?? {}, 'TWITCH_CLIENT_SECRET'),
-  '缺少 TWITCH_CLIENT_SECRET environment',
-);
-assert(
-  Object.hasOwn(service.environment ?? {}, 'TELEGRAM_ENABLED'),
-  '缺少 TELEGRAM_ENABLED environment',
-);
-assert(
-  Object.hasOwn(service.environment ?? {}, 'TELEGRAM_BOT_TOKEN'),
-  '缺少 TELEGRAM_BOT_TOKEN environment',
-);
-assert(
-  Object.hasOwn(service.environment ?? {}, 'TELEGRAM_ALLOWED_CHAT_IDS'),
-  '缺少 TELEGRAM_ALLOWED_CHAT_IDS environment',
-);
-assert(
   service.shm_size === '1073741824' ||
     service.shm_size === 1_073_741_824,
   'shm_size 必須是 1 GiB',

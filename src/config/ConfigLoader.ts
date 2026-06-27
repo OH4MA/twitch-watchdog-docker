@@ -5,6 +5,7 @@ import {
   STREAM_QUALITIES,
   type AppConfig,
   type BrowserConfig,
+  type DiscordConfig,
   type LogLevel,
   type StreamQuality,
   type TelegramConfig,
@@ -39,6 +40,7 @@ const MAX_TIMER_DELAY_SECONDS = Math.floor(MAX_TIMER_DELAY_MS / 1_000);
 const CHANNEL_PATTERN = /^[A-Za-z0-9_]{1,25}$/u;
 const ENV_REFERENCE_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/gu;
 const TELEGRAM_CHAT_ID_PATTERN = /^-?\d+$/u;
+const DISCORD_SNOWFLAKE_PATTERN = /^\d{1,20}$/u;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -129,9 +131,99 @@ function buildConfig(
     twitchApi: buildTwitchApi(root.twitch_api, env),
     browser: buildBrowserConfig(root.browser),
     telegram: buildTelegramConfig(root.telegram, env),
+    discord: buildDiscordConfig(root.discord, env),
   };
 
   return config;
+}
+
+function buildDiscordConfig(
+  value: unknown,
+  env: NodeJS.ProcessEnv,
+): DiscordConfig {
+  const discord = value === undefined
+    ? {}
+    : requireRecord(value, 'discord');
+  const enabled = resolveBooleanOverride(
+    env.DISCORD_ENABLED,
+    discord.enabled,
+    'discord.enabled',
+    false,
+  );
+  const botToken = resolveOptionalStringOverride(
+    env.DISCORD_BOT_TOKEN,
+    discord.bot_token,
+    'discord.bot_token',
+  );
+  const applicationId = resolveOptionalStringOverride(
+    env.DISCORD_APPLICATION_ID,
+    discord.application_id,
+    'discord.application_id',
+  );
+  const guildId = resolveOptionalStringOverride(
+    env.DISCORD_GUILD_ID,
+    discord.guild_id,
+    'discord.guild_id',
+  );
+  const allowedChannelIds = resolveDiscordChannelIds(
+    env.DISCORD_ALLOWED_CHANNEL_IDS,
+    discord.allowed_channel_ids,
+  );
+  const allowDirectMessages = resolveBooleanOverride(
+    env.DISCORD_ALLOW_DIRECT_MESSAGES,
+    discord.allow_direct_messages,
+    'discord.allow_direct_messages',
+    false,
+  );
+  const allowedUserIds = resolveDiscordUserIds(
+    env.DISCORD_ALLOWED_USER_IDS,
+    discord.allowed_user_ids,
+  );
+
+  if (enabled && botToken === '') {
+    throw new ConfigValidationError(
+      'discord.bot_token',
+      '啟用 Discord 時必須是非空字串',
+    );
+  }
+  if (enabled && !DISCORD_SNOWFLAKE_PATTERN.test(applicationId)) {
+    throw new ConfigValidationError(
+      'discord.application_id',
+      '啟用 Discord 時必須是有效的 application ID',
+    );
+  }
+  if (enabled && guildId !== '' && !DISCORD_SNOWFLAKE_PATTERN.test(guildId)) {
+    throw new ConfigValidationError(
+      'discord.guild_id',
+      '必須是有效的 guild ID',
+    );
+  }
+  if (
+    enabled &&
+    allowedChannelIds.length === 0 &&
+    (!allowDirectMessages || allowedUserIds.length === 0)
+  ) {
+    throw new ConfigValidationError(
+      'discord.allowed_channel_ids',
+      '啟用 Discord 時至少需要一個 channel ID，或啟用私訊並設定 user ID',
+    );
+  }
+  if (enabled && allowDirectMessages && allowedUserIds.length === 0) {
+    throw new ConfigValidationError(
+      'discord.allowed_user_ids',
+      '啟用 Discord 私訊時至少需要一個 user ID',
+    );
+  }
+
+  return {
+    enabled,
+    botToken,
+    applicationId,
+    guildId,
+    allowedChannelIds,
+    allowDirectMessages,
+    allowedUserIds,
+  };
 }
 
 function buildTelegramConfig(
@@ -227,6 +319,66 @@ function resolveTelegramChatIds(
       throw new ConfigValidationError(
         `telegram.allowed_chat_ids[${index}]`,
         '必須是整數格式的 chat ID 字串',
+      );
+    }
+    return value;
+  }))];
+}
+
+function resolveDiscordChannelIds(
+  environmentValue: string | undefined,
+  configValue: unknown,
+): readonly string[] {
+  return resolveDiscordSnowflakeList(
+    environmentValue,
+    configValue,
+    'discord.allowed_channel_ids',
+    'channel ID',
+  );
+}
+
+function resolveDiscordUserIds(
+  environmentValue: string | undefined,
+  configValue: unknown,
+): readonly string[] {
+  return resolveDiscordSnowflakeList(
+    environmentValue,
+    configValue,
+    'discord.allowed_user_ids',
+    'user ID',
+  );
+}
+
+function resolveDiscordSnowflakeList(
+  environmentValue: string | undefined,
+  configValue: unknown,
+  field: string,
+  label: string,
+): readonly string[] {
+  const values = environmentValue === undefined
+    ? configValue
+    : environmentValue.trim() === ''
+      ? []
+      : environmentValue.split(',').map((item) => item.trim());
+
+  if (values === undefined) {
+    return [];
+  }
+  if (!Array.isArray(values)) {
+    throw new ConfigValidationError(
+      field,
+      `必須是 ${label} 字串陣列`,
+    );
+  }
+
+  return [...new Set(values.map((value, index) => {
+    if (
+      typeof value !== 'string' ||
+      !DISCORD_SNOWFLAKE_PATTERN.test(value)
+    ) {
+      throw new ConfigValidationError(
+        `${field}[${index}]`,
+        `必須是 Discord snowflake ${label} 字串`,
       );
     }
     return value;
@@ -552,6 +704,7 @@ export { DEFAULT_CONFIG_PATH };
 export type {
   AppConfig,
   BrowserConfig,
+  DiscordConfig,
   LogLevel,
   TelegramConfig,
   TwitchApiConfig,

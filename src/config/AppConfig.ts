@@ -34,6 +34,16 @@ export interface TelegramConfig {
   readonly pollingTimeoutSeconds: number;
 }
 
+export interface DiscordConfig {
+  readonly enabled: boolean;
+  readonly botToken: string;
+  readonly applicationId: string;
+  readonly guildId: string;
+  readonly allowedChannelIds: readonly string[];
+  readonly allowDirectMessages: boolean;
+  readonly allowedUserIds: readonly string[];
+}
+
 export interface AppConfig {
   readonly channels: readonly string[];
   readonly checkIntervalSeconds: number;
@@ -44,4 +54,5 @@ export interface AppConfig {
   readonly twitchApi: TwitchApiConfig;
   readonly browser: BrowserConfig;
   readonly telegram: TelegramConfig;
+  readonly discord: DiscordConfig;
 }

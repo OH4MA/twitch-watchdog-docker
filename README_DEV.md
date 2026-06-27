@@ -12,6 +12,8 @@
 - `src/sessions`：多頻道 session reconcile。
 - `src/scheduler`：輪詢排程、stream selection 與不可重入控制。
 - `src/telegram`：Telegram Bot API 與指令處理。
+- `src/discord`：Discord REST API、Gateway WebSocket 與 slash command 處理。
+  Discord REST API, Gateway WebSocket, and slash command handling.
 - `src/app`：composition root、啟停順序、signal handler 與 runtime resource snapshot。
 - `test`：unit、integration、Playwright mock page E2E、Docker smoke 輔助檔。
 - `scripts`：維護與觀察用腳本。
@@ -130,7 +132,8 @@ Benchmark 輸出屬於本機開發產物，已由 `.gitignore` 排除。
 
 - 不要重新加入 Twitch Drops 自動領取或舊 GraphQL claim 流程。
 - 不要實作自動輸入 Twitch 帳號密碼、多帳號批量管理、CAPTCHA 繞過、反偵測或平台限制規避。
-- `storage-state.json`、`.env`、`config.yml`、token、cookie 與 Telegram Chat ID 不得提交。
+- `storage-state.json`、`config.yml`、token、cookie、Telegram Chat ID、Discord Channel ID 與 Discord User ID 不得提交。
+  Do not commit `storage-state.json`, `config.yml`, tokens, cookies, Telegram Chat IDs, Discord Channel IDs, or Discord User IDs.
 - Twitch 播放器 DOM 不是穩定公開 API；selector 變更應集中在 `src/browser` 並以 mock pages 覆蓋。
 - 播放最佳化或 Bonus Points 領取失敗不得中止觀看 session。
 - Twitch 內容警示確認失敗應回報明確健康檢查原因，不得誤判為登入或離線。

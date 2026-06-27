@@ -16,6 +16,11 @@ import {
   type CredentialValidator,
 } from '../credentials/index.js';
 import {
+  DefaultDiscordBot,
+  DiscordApiClient,
+  type DiscordBot,
+} from '../discord/index.js';
+import {
   createLogger,
   type Logger,
 } from '../logging/index.js';
@@ -35,6 +40,7 @@ import {
   type AppRunner,
   type ApplicationLoggerFactory,
   type ApplicationRuntime,
+  type ApplicationIntegration,
   type RuntimeFactory,
 } from './AppRunner.js';
 import { RuntimeResourceMonitor } from './RuntimeResourceMonitor.js';
@@ -89,6 +95,19 @@ export function createDefaultRuntime(
     maxConcurrentStreams: config.maxConcurrentStreams,
   };
   let telegramBot: TelegramBot | undefined;
+  let discordBot: DiscordBot | undefined;
+
+  const notify = async (
+    operation: (
+      integration: TelegramBot | DiscordBot,
+    ) => Promise<void>,
+  ): Promise<void> => {
+    await Promise.all(
+      [telegramBot, discordBot]
+        .filter((bot): bot is TelegramBot | DiscordBot => bot !== undefined)
+        .map((bot) => operation(bot).catch(() => undefined)),
+    );
+  };
 
   const browserManager = new DefaultBrowserManager(config, {
     logger,
@@ -100,7 +119,7 @@ export function createDefaultRuntime(
   });
   const rewardClaimer = new RewardClaimer({
     logger,
-    onResult: (result) => telegramBot?.notifyReward(result),
+    onResult: (result) => notify((bot) => bot.notifyReward(result)),
   });
   const sessionFactory = new DefaultChannelSessionFactory({
     config: {
@@ -114,7 +133,8 @@ export function createDefaultRuntime(
     logger,
     onInvalidated: (channel, reason) =>
       sessionManagerReference.current?.invalidate(channel, reason),
-    onPageRefresh: (event) => telegramBot?.notifyPageRefresh(event),
+    onPageRefresh: (event) =>
+      notify((bot) => bot.notifyPageRefresh(event)),
     onContainerRestartRequested: async () => {
       await logger.flush();
       process.exit(1);
@@ -140,7 +160,7 @@ export function createDefaultRuntime(
     sessionManager,
     logger,
     onStreamStatusChanged: (change) =>
-      telegramBot?.notifyStreamStatus(change),
+      notify((bot) => bot.notifyStreamStatus(change)),
   });
   const runtimeConfigManager = new YamlRuntimeConfigManager({
     configPath,
@@ -152,7 +172,7 @@ export function createDefaultRuntime(
       },
     },
   });
-  const integrations = [
+  const integrations: ApplicationIntegration[] = [
     new RuntimeResourceMonitor({
       browserManager,
       sessionManager,
@@ -166,6 +186,20 @@ export function createDefaultRuntime(
           config,
           api: new TelegramApiClient({
             botToken: config.telegram.botToken,
+          }),
+          scheduler,
+          sessionManager,
+          runtimeConfigManager,
+          logger,
+        })),
+      ]
+      : []),
+    ...(config.discord.enabled
+      ? [
+        (discordBot = new DefaultDiscordBot({
+          config,
+          api: new DiscordApiClient({
+            botToken: config.discord.botToken,
           }),
           scheduler,
           sessionManager,
