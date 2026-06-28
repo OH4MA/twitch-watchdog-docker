@@ -72,7 +72,7 @@ function createConfig(
 }
 
 function createMockPage(input: {
-  readonly marker?: HealthMarker;
+  readonly marker?: HealthMarker | readonly HealthMarker[];
   readonly url?: string;
   readonly gotoError?: Error;
   readonly finalUrl?: string;
@@ -80,32 +80,39 @@ function createMockPage(input: {
   readonly reloadImplementation?: () => Promise<null>;
   readonly contentWarningClickError?: Error;
 } = {}): MockPageControls {
-  let marker = input.marker;
+  let markers = normalizeMarkers(input.marker);
   let currentUrl = input.url ?? 'about:blank';
   let closed = false;
   let contentWarningClickCount = 0;
 
   const locator = (selector: string): Locator => {
     const visible =
-      marker !== undefined &&
-      selector === CHANNEL_HEALTH_SELECTORS[marker];
+      [...markers].some(
+        (marker) => selector === CHANNEL_HEALTH_SELECTORS[marker],
+      );
     const mockLocator = {
       first(): Locator {
         return mockLocator as unknown as Locator;
+      },
+      nth(): Locator {
+        return mockLocator as unknown as Locator;
+      },
+      async count(): Promise<number> {
+        return 1;
       },
       async isVisible(): Promise<boolean> {
         return visible;
       },
       async click(): Promise<void> {
         if (
-          marker === 'contentWarning' &&
+          markers.has('contentWarning') &&
           selector === CHANNEL_HEALTH_SELECTORS.contentWarning
         ) {
           if (input.contentWarningClickError !== undefined) {
             throw input.contentWarningClickError;
           }
           contentWarningClickCount += 1;
-          marker = 'liveContent';
+          markers = new Set(['liveContent']);
         }
       },
       async waitFor(): Promise<void> {
@@ -154,7 +161,7 @@ function createMockPage(input: {
     screenshot,
     contentWarningClickCount: () => contentWarningClickCount,
     setMarker(value): void {
-      marker = value;
+      markers = normalizeMarkers(value);
     },
     setUrl(value): void {
       currentUrl = value;
@@ -163,6 +170,15 @@ function createMockPage(input: {
       closed = value;
     },
   };
+}
+
+function normalizeMarkers(
+  marker: HealthMarker | readonly HealthMarker[] | undefined,
+): Set<HealthMarker> {
+  if (marker === undefined) {
+    return new Set();
+  }
+  return new Set(Array.isArray(marker) ? marker : [marker]);
 }
 
 function createBrowserManager(page: Page): {
@@ -473,6 +489,20 @@ describe('DefaultChannelSession', () => {
     ).resolves.toEqual({
       healthy: false,
       reason: 'content_warning',
+    });
+  });
+
+  it('健康檢查同時看到登入按鈕與播放器時以播放器為健康依據', async () => {
+    const mockPage = createMockPage({
+      marker: ['loginRequired', 'liveContent'],
+      url: TARGET_URL,
+    });
+
+    await expect(
+      evaluateChannelHealth(mockPage.page, TARGET_URL),
+    ).resolves.toEqual({
+      healthy: true,
+      reason: 'live',
     });
   });
 

@@ -24,6 +24,7 @@ import {
   createLogger,
   type Logger,
 } from '../logging/index.js';
+import type { BotCommandContext } from '../notifications/BotCommandContext.js';
 import {
   DefaultWatchdogScheduler,
   selectActiveChannels,
@@ -172,6 +173,21 @@ export function createDefaultRuntime(
       },
     },
   });
+  const commandContext: BotCommandContext = {
+    runCheck: () => scheduler.runOnce(),
+    pauseChecks: () => scheduler.stop(),
+    resumeChecks: () => scheduler.start(),
+    getSchedulerSnapshot: () => scheduler.getSnapshot(),
+    getActiveChannels: () => sessionManager.getActiveChannels(),
+    getRefreshStatuses: () => sessionManager.getRefreshStatuses(),
+    refreshPages: (channel) => sessionManager.refreshPages(channel),
+    captureScreenshot: (channel) =>
+      sessionManager.captureScreenshot(channel),
+    getConfig: () => runtimeConfigManager.getConfig(),
+    setChannels: (channels) => runtimeConfigManager.setChannels(channels),
+    setMaxConcurrentStreams: (value) =>
+      runtimeConfigManager.setMaxConcurrentStreams(value),
+  };
   const integrations: ApplicationIntegration[] = [
     new RuntimeResourceMonitor({
       browserManager,
@@ -187,9 +203,7 @@ export function createDefaultRuntime(
           api: new TelegramApiClient({
             botToken: config.telegram.botToken,
           }),
-          scheduler,
-          sessionManager,
-          runtimeConfigManager,
+          commandContext,
           logger,
         })),
       ]
@@ -201,9 +215,7 @@ export function createDefaultRuntime(
           api: new DiscordApiClient({
             botToken: config.discord.botToken,
           }),
-          scheduler,
-          sessionManager,
-          runtimeConfigManager,
+          commandContext,
           logger,
         })),
       ]

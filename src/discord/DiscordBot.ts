@@ -2,17 +2,11 @@ import type {
   ChannelSessionRefreshEvent,
   RewardClaimResult,
 } from '../browser/index.js';
-import type {
-  AppConfig,
-  RuntimeConfigManager,
-} from '../config/index.js';
+import type { AppConfig } from '../config/index.js';
 import { ConfigValidationError } from '../config/index.js';
 import type { Logger } from '../logging/index.js';
-import type {
-  StreamStatusChange,
-  WatchdogScheduler,
-} from '../scheduler/index.js';
-import type { SessionManager } from '../sessions/index.js';
+import type { BotCommandContext } from '../notifications/BotCommandContext.js';
+import type { StreamStatusChange } from '../scheduler/index.js';
 import type {
   DiscordApi,
   DiscordApplicationCommand,
@@ -44,9 +38,7 @@ export type DiscordGatewayFactory = (url: string) => DiscordGatewaySocket;
 export interface DiscordBotOptions {
   readonly config: AppConfig;
   readonly api: DiscordApi;
-  readonly scheduler: WatchdogScheduler;
-  readonly sessionManager: SessionManager;
-  readonly runtimeConfigManager: RuntimeConfigManager;
+  readonly commandContext: BotCommandContext;
   readonly logger: Logger;
   readonly gatewayFactory?: DiscordGatewayFactory;
   readonly timer?: DiscordBotTimer;
@@ -387,15 +379,15 @@ export class DefaultDiscordBot implements DiscordBot {
         return;
       case 'check':
         await this.defer(interaction);
-        await this.options.scheduler.runOnce();
+        await this.options.commandContext.runCheck();
         await this.editReply(interaction, '已完成一次狀態檢查。');
         return;
       case 'pause':
-        await this.options.scheduler.stop();
+        await this.options.commandContext.pauseChecks();
         await this.reply(interaction, '自動檢查已暫停。');
         return;
       case 'resume':
-        this.options.scheduler.start();
+        this.options.commandContext.resumeChecks();
         await this.reply(interaction, '自動檢查已恢復。');
         return;
       case 'screenshot':
@@ -415,7 +407,7 @@ export class DefaultDiscordBot implements DiscordBot {
     requestedChannel: string | undefined,
   ): Promise<void> {
     if (requestedChannel === undefined) {
-      const activeChannels = this.options.sessionManager.getActiveChannels();
+      const activeChannels = this.options.commandContext.getActiveChannels();
       if (activeChannels.length === 0) {
         await this.editReply(interaction, '目前沒有正在觀看的頻道可供截圖。');
         return;
@@ -425,7 +417,7 @@ export class DefaultDiscordBot implements DiscordBot {
       let sentCount = 0;
       for (const channel of activeChannels) {
         const screenshot =
-          await this.options.sessionManager.captureScreenshot(channel);
+          await this.options.commandContext.captureScreenshot(channel);
         if (screenshot === undefined) {
           continue;
         }
@@ -438,11 +430,11 @@ export class DefaultDiscordBot implements DiscordBot {
       return;
     }
 
-    const screenshot = await this.options.sessionManager.captureScreenshot(
+    const screenshot = await this.options.commandContext.captureScreenshot(
       requestedChannel,
     );
     if (screenshot === undefined) {
-      const activeChannels = this.options.sessionManager.getActiveChannels();
+      const activeChannels = this.options.commandContext.getActiveChannels();
       await this.editReply(
         interaction,
         activeChannels.length === 0
@@ -464,9 +456,9 @@ export class DefaultDiscordBot implements DiscordBot {
     requestedChannel: string | undefined,
   ): Promise<void> {
     const results =
-      await this.options.sessionManager.refreshPages(requestedChannel);
+      await this.options.commandContext.refreshPages(requestedChannel);
     if (results.length === 0) {
-      const activeChannels = this.options.sessionManager.getActiveChannels();
+      const activeChannels = this.options.commandContext.getActiveChannels();
       await this.editReply(
         interaction,
         activeChannels.length === 0
@@ -524,7 +516,7 @@ export class DefaultDiscordBot implements DiscordBot {
       await this.editReply(interaction, '用法：/channel_add 頻道名稱');
       return;
     }
-    const current = this.options.runtimeConfigManager.getConfig();
+    const current = this.options.commandContext.getConfig();
     if (
       current.channels.some(
         (channel) =>
@@ -535,7 +527,7 @@ export class DefaultDiscordBot implements DiscordBot {
       await this.editReply(interaction, `頻道已在監控清單中：${argument}`);
       return;
     }
-    const updated = await this.options.runtimeConfigManager.setChannels([
+    const updated = await this.options.commandContext.setChannels([
       ...current.channels,
       argument,
     ]);
@@ -573,7 +565,7 @@ export class DefaultDiscordBot implements DiscordBot {
       await this.editReply(interaction, '用法：/channel_remove 頻道名稱');
       return;
     }
-    const current = this.options.runtimeConfigManager.getConfig();
+    const current = this.options.commandContext.getConfig();
     const normalized = argument.toLocaleLowerCase('en-US');
     const channels = current.channels.filter(
       (channel) =>
@@ -584,7 +576,7 @@ export class DefaultDiscordBot implements DiscordBot {
       return;
     }
     const updated =
-      await this.options.runtimeConfigManager.setChannels(channels);
+      await this.options.commandContext.setChannels(channels);
     await this.editReply(
       interaction,
       `已移除頻道：${argument}\n${formatRuntimeConfig(updated)}`,
@@ -601,7 +593,7 @@ export class DefaultDiscordBot implements DiscordBot {
       return;
     }
     const updated =
-      await this.options.runtimeConfigManager.setChannels(channels);
+      await this.options.commandContext.setChannels(channels);
     await this.editReply(
       interaction,
       `頻道清單已更新\n${formatRuntimeConfig(updated)}`,
@@ -622,7 +614,7 @@ export class DefaultDiscordBot implements DiscordBot {
       return;
     }
     const updated =
-      await this.options.runtimeConfigManager.setMaxConcurrentStreams(value);
+      await this.options.commandContext.setMaxConcurrentStreams(value);
     await this.editReply(
       interaction,
       `最大同時觀看已更新為 ${value}\n${formatRuntimeConfig(updated)}`,
@@ -638,8 +630,8 @@ export class DefaultDiscordBot implements DiscordBot {
   }
 
   private formatStatus(): string {
-    const snapshot = this.options.scheduler.getSnapshot();
-    const activeChannels = this.options.sessionManager.getActiveChannels();
+    const snapshot = this.options.commandContext.getSchedulerSnapshot();
+    const activeChannels = this.options.commandContext.getActiveChannels();
     const liveChannels = snapshot.channels
       .filter((channel) => channel.isLive === true)
       .map((channel) => channel.channel);
@@ -655,7 +647,7 @@ export class DefaultDiscordBot implements DiscordBot {
   }
 
   private formatChannels(): string {
-    const snapshot = this.options.scheduler.getSnapshot();
+    const snapshot = this.options.commandContext.getSchedulerSnapshot();
     return snapshot.channels
       .map((status, index) => {
         const marker = status.isLive === true
@@ -669,7 +661,7 @@ export class DefaultDiscordBot implements DiscordBot {
   }
 
   private formatRefreshCountdown(): string {
-    const statuses = this.options.sessionManager.getRefreshStatuses();
+    const statuses = this.options.commandContext.getRefreshStatuses();
     if (statuses.length === 0) {
       return '目前沒有正在觀看的頻道。';
     }
@@ -697,7 +689,7 @@ export class DefaultDiscordBot implements DiscordBot {
 
   private formatRuntimeConfig(): string {
     return formatRuntimeConfig(
-      this.options.runtimeConfigManager.getConfig(),
+      this.options.commandContext.getConfig(),
     );
   }
 

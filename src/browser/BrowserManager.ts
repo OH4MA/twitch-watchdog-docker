@@ -1,26 +1,49 @@
-import {
-  firefox,
-  type Browser,
-  type BrowserContext,
-  type Page,
-  type Request,
-} from 'playwright';
+import type { Page } from 'playwright';
 
-import type { AppConfig } from '../config/AppConfig.js';
 import {
   LOG_EVENTS,
   redactSensitiveString,
-  type Logger,
 } from '../logging/Logger.js';
+import { PlaywrightBrowserLauncher } from './adapters/PlaywrightBrowserLauncher.js';
+import type {
+  BrowserAdapter,
+  BrowserContextAdapter,
+  BrowserInvalidation,
+  BrowserInvalidationObserver,
+  BrowserInvalidationReason,
+  BrowserLauncher,
+  BrowserManager,
+  BrowserManagerConfig,
+  BrowserManagerDependencies,
+  BrowserManagerLogger,
+  BrowserPageAdapter,
+  DetachedResources,
+  PageEntry,
+  RestartSchedule,
+} from './types.js';
+
+export { PlaywrightBrowserLauncher } from './adapters/PlaywrightBrowserLauncher.js';
+export type {
+  BrowserAdapter,
+  BrowserContextAdapter,
+  BrowserContextOptions,
+  BrowserInvalidation,
+  BrowserInvalidationObserver,
+  BrowserInvalidationReason,
+  BrowserLauncher,
+  BrowserLaunchOptions,
+  BrowserManager,
+  BrowserManagerConfig,
+  BrowserManagerDependencies,
+  BrowserManagerLogger,
+  BrowserPageAdapter,
+  ResourceBlockingOptions,
+} from './types.js';
 
 const DEFAULT_RESTART_BACKOFF_MS = 1_000;
 const DEFAULT_RESTART_BACKOFF_MAX_MS = 30_000;
 const DEFAULT_MAX_AUTOMATIC_RESTART_ATTEMPTS = 3;
 const DEFAULT_RESTART_ATTEMPT_RESET_MS = 60_000;
-const TRACKING_HOSTNAMES = new Set([
-  'spade.twitch.tv',
-  'science.twitch.tv',
-]);
 
 const NOOP_LOGGER: BrowserManagerLogger = {
   debug(): void {},
@@ -28,132 +51,6 @@ const NOOP_LOGGER: BrowserManagerLogger = {
   warn(): void {},
   error(): void {},
 };
-
-export type BrowserManagerConfig = Pick<
-  AppConfig,
-  'headless' | 'storageStatePath'
-> & {
-  readonly browser: Pick<
-    AppConfig['browser'],
-    | 'restartOnCrash'
-    | 'viewportWidth'
-    | 'viewportHeight'
-    | 'blockImages'
-    | 'blockFonts'
-    | 'blockKnownTracking'
-  >;
-};
-
-export interface BrowserLaunchOptions {
-  readonly headless: boolean;
-}
-
-export interface BrowserContextOptions {
-  readonly storageState: string;
-  readonly viewport: {
-    readonly width: number;
-    readonly height: number;
-  };
-}
-
-export interface BrowserPageAdapter {
-  readonly page: Page;
-  close(): Promise<void>;
-  isClosed(): boolean;
-  onCrash(listener: () => void): () => void;
-  onClose(listener: () => void): () => void;
-  onPopup(listener: (popup: Page) => void): () => void;
-}
-
-export interface BrowserContextAdapter {
-  configureResourceBlocking(options: ResourceBlockingOptions): Promise<void>;
-  newPage(): Promise<BrowserPageAdapter>;
-  close(): Promise<void>;
-}
-
-export interface ResourceBlockingOptions {
-  readonly blockImages: boolean;
-  readonly blockFonts: boolean;
-  readonly blockKnownTracking: boolean;
-}
-
-export interface BrowserAdapter {
-  newContext(options: BrowserContextOptions): Promise<BrowserContextAdapter>;
-  close(): Promise<void>;
-  onDisconnected(listener: () => void): () => void;
-}
-
-export interface BrowserLauncher {
-  launch(options: BrowserLaunchOptions): Promise<BrowserAdapter>;
-}
-
-export interface BrowserManager {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  createPage(channel: string): Promise<Page>;
-  closePage(channel: string): Promise<void>;
-  restart(): Promise<void>;
-  getPageCount(): number;
-}
-
-export type BrowserInvalidationReason =
-  | 'page_crashed'
-  | 'page_closed'
-  | 'browser_disconnected'
-  | 'browser_restarted';
-
-export interface BrowserInvalidation {
-  readonly channel: string;
-  readonly reason: BrowserInvalidationReason;
-}
-
-export type BrowserInvalidationObserver = (
-  invalidation: BrowserInvalidation,
-) => Promise<void> | void;
-
-export type BrowserManagerLogger = Pick<
-  Logger,
-  'debug' | 'info' | 'warn' | 'error'
->;
-
-export interface BrowserManagerDependencies {
-  readonly launcher?: BrowserLauncher;
-  readonly logger?: BrowserManagerLogger;
-  readonly onInvalidated?: BrowserInvalidationObserver;
-  readonly sleep?: (milliseconds: number) => Promise<void>;
-  readonly now?: () => number;
-  readonly restartBackoffMs?: number;
-  readonly restartBackoffMaxMs?: number;
-  readonly maxAutomaticRestartAttempts?: number;
-  readonly restartAttemptResetMs?: number;
-}
-
-interface PageEntry {
-  readonly adapter: BrowserPageAdapter;
-  unsubscribeCrash: () => void;
-  unsubscribeClose: () => void;
-  unsubscribePopup: () => void;
-}
-
-interface DetachedResources {
-  readonly browser: BrowserAdapter | undefined;
-  readonly context: BrowserContextAdapter | undefined;
-  readonly pages: readonly PageEntry[];
-  readonly unsubscribeBrowser: (() => void) | undefined;
-}
-
-interface RestartSchedule {
-  readonly attempt: number;
-  readonly delayMs: number;
-  readonly recoveryEpoch: number;
-}
-
-export class PlaywrightBrowserLauncher implements BrowserLauncher {
-  public async launch(options: BrowserLaunchOptions): Promise<BrowserAdapter> {
-    const browser = await firefox.launch(options);
-    return new PlaywrightBrowserAdapter(browser);
-  }
-}
 
 export class DefaultBrowserManager implements BrowserManager {
   private readonly launcher: BrowserLauncher;
@@ -831,116 +728,6 @@ export class DefaultBrowserManager implements BrowserManager {
     } finally {
       release();
     }
-  }
-}
-
-class PlaywrightBrowserAdapter implements BrowserAdapter {
-  public constructor(private readonly browser: Browser) {}
-
-  public async newContext(
-    options: BrowserContextOptions,
-  ): Promise<BrowserContextAdapter> {
-    const context = await this.browser.newContext(options);
-    return new PlaywrightBrowserContextAdapter(context);
-  }
-
-  public async close(): Promise<void> {
-    await this.browser.close();
-  }
-
-  public onDisconnected(listener: () => void): () => void {
-    this.browser.on('disconnected', listener);
-    return () => {
-      this.browser.off('disconnected', listener);
-    };
-  }
-}
-
-class PlaywrightBrowserContextAdapter implements BrowserContextAdapter {
-  public constructor(private readonly context: BrowserContext) {}
-
-  public async configureResourceBlocking(
-    options: ResourceBlockingOptions,
-  ): Promise<void> {
-    if (
-      !options.blockImages &&
-      !options.blockFonts &&
-      !options.blockKnownTracking
-    ) {
-      return;
-    }
-    await this.context.route('**/*', async (route) => {
-      if (shouldBlockRequest(route.request(), options)) {
-        await route.abort('blockedbyclient');
-        return;
-      }
-      await route.continue();
-    });
-  }
-
-  public async newPage(): Promise<BrowserPageAdapter> {
-    const page = await this.context.newPage();
-    return new PlaywrightBrowserPageAdapter(page);
-  }
-
-  public async close(): Promise<void> {
-    await this.context.close();
-  }
-}
-
-function shouldBlockRequest(
-  request: Request,
-  options: ResourceBlockingOptions,
-): boolean {
-  const resourceType = request.resourceType();
-  if (options.blockImages && resourceType === 'image') {
-    return true;
-  }
-  if (options.blockFonts && resourceType === 'font') {
-    return true;
-  }
-  if (!options.blockKnownTracking) {
-    return false;
-  }
-  try {
-    return TRACKING_HOSTNAMES.has(new URL(request.url()).hostname);
-  } catch {
-    return false;
-  }
-}
-
-class PlaywrightBrowserPageAdapter implements BrowserPageAdapter {
-  public constructor(public readonly page: Page) {}
-
-  public async close(): Promise<void> {
-    if (!this.page.isClosed()) {
-      await this.page.close();
-    }
-  }
-
-  public isClosed(): boolean {
-    return this.page.isClosed();
-  }
-
-  public onCrash(listener: () => void): () => void {
-    this.page.on('crash', listener);
-    return () => {
-      this.page.off('crash', listener);
-    };
-  }
-
-  public onClose(listener: () => void): () => void {
-    this.page.on('close', listener);
-    return () => {
-      this.page.off('close', listener);
-    };
-  }
-
-  public onPopup(listener: (popup: Page) => void): () => void {
-    this.page.on('popup', listener);
-    return () => {
-      this.page.off('popup', listener);
-    };
   }
 }
 

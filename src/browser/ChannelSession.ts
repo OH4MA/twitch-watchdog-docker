@@ -1,13 +1,17 @@
-import type { Locator, Page } from 'playwright';
+import type { Page } from 'playwright';
 
 import type { AppConfig } from '../config/AppConfig.js';
 import {
   LOG_EVENTS,
-  redactSensitiveString,
-  type LogFields,
   type Logger,
 } from '../logging/index.js';
 import type { BrowserManager } from './BrowserManager.js';
+import {
+  acceptContentWarning,
+  evaluateChannelHealth,
+  type ChannelHealthEvaluator,
+  type ChannelHealthResult,
+} from './ChannelHealthChecker.js';
 import type {
   RewardClaimer,
   RewardClaimResult,
@@ -16,44 +20,35 @@ import {
   DefaultStreamPlaybackOptimizer,
   type StreamPlaybackOptimizer,
 } from './StreamPlaybackOptimizer.js';
+import {
+  CHANNEL_PATTERN,
+  createChannelUrl,
+  isExpectedChannelUrl,
+  stableJitter,
+} from './channel-url.js';
+import { safeErrorMessage, safeLog } from './safe-logging.js';
 
-const CHANNEL_PATTERN = /^[A-Za-z0-9_]{1,25}$/u;
+export {
+  CHANNEL_HEALTH_SELECTORS,
+  acceptContentWarning,
+  evaluateChannelHealth,
+  type ChannelHealthEvaluator,
+  type ChannelHealthFailureReason,
+  type ChannelHealthResult,
+  type ContentWarningAcceptResult,
+} from './ChannelHealthChecker.js';
+export {
+  createChannelUrl,
+  isExpectedChannelUrl,
+  stableJitter,
+} from './channel-url.js';
+export { safeErrorMessage, safeLog } from './safe-logging.js';
+
 const DEFAULT_HEALTH_FAILURE_THRESHOLD = 3;
 const MAX_TIMER_JITTER_MS = 5_000;
 const MAX_PAGE_REFRESH_JITTER_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-const CONTENT_WARNING_SETTLE_TIMEOUT_MS = 3_000;
 export const REWARD_FAILURE_RECOVERY_THRESHOLD = 10;
-
-export const CHANNEL_HEALTH_SELECTORS = Object.freeze({
-  loginRequired: [
-    '[data-test-selector="login-required"]',
-    '[data-a-target="login-button"]',
-    '[data-channel-health="login-required"]',
-  ].join(', '),
-  liveContent: [
-    '[data-a-target="video-player"]',
-    '[data-test-selector="video-player"]',
-    '[data-channel-health="live"]',
-  ].join(', '),
-  error: [
-    '[data-test-selector="error-page"]',
-    '[data-a-target="player-error-message"]',
-    '[data-channel-health="error"]',
-  ].join(', '),
-  offline: [
-    '[data-test-selector="offline-page"]',
-    '[data-a-target="offline-channel-main-content"]',
-    '[data-channel-health="offline"]',
-  ].join(', '),
-  contentWarning: [
-    '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
-    '[data-a-target="content-warning-start-watching-button"]',
-    '[data-channel-health="content-warning"]',
-    'button:has-text("Start Watching")',
-    'button:has-text("開始觀看")',
-  ].join(', '),
-});
 
 export type ChannelSessionState =
   | 'starting'
@@ -62,25 +57,6 @@ export type ChannelSessionState =
   | 'stopping'
   | 'stopped'
   | 'failed';
-
-export type ChannelHealthFailureReason =
-  | 'not_started'
-  | 'page_closed'
-  | 'url_mismatch'
-  | 'login_required'
-  | 'error_page'
-  | 'offline'
-  | 'content_warning'
-  | 'live_content_missing'
-  | 'health_check_error';
-
-export type ChannelHealthResult =
-  | { readonly healthy: true; readonly reason: 'live' }
-  | {
-      readonly healthy: false;
-      readonly reason: ChannelHealthFailureReason;
-      readonly error?: string;
-    };
 
 export interface ChannelSession {
   readonly channel: string;
@@ -102,11 +78,6 @@ export type ChannelSessionLogger = Pick<
   Logger,
   'debug' | 'info' | 'warn' | 'error'
 >;
-
-export type ChannelHealthEvaluator = (
-  page: Page,
-  targetUrl: string,
-) => Promise<ChannelHealthResult>;
 
 export type ChannelSessionInvalidationObserver = (
   channel: string,
@@ -1021,157 +992,6 @@ export class DefaultChannelSession implements ChannelSession {
   }
 }
 
-export function createChannelUrl(channel: string): string {
-  if (!CHANNEL_PATTERN.test(channel)) {
-    throw new Error('Channel 必須是 1 到 25 字元的英數字或底線');
-  }
-  return `https://www.twitch.tv/${encodeURIComponent(channel)}`;
-}
-
-export async function evaluateChannelHealth(
-  page: Page,
-  targetUrl: string,
-): Promise<ChannelHealthResult> {
-  try {
-    if (page.isClosed()) {
-      return { healthy: false, reason: 'page_closed' };
-    }
-
-    if (!isExpectedChannelUrl(page.url(), targetUrl)) {
-      return { healthy: false, reason: 'url_mismatch' };
-    }
-
-    if (
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.loginRequired))
-    ) {
-      return { healthy: false, reason: 'login_required' };
-    }
-
-    if (
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.error)) ||
-      await hasUnsupportedPlayerError(page)
-    ) {
-      return { healthy: false, reason: 'error_page' };
-    }
-
-    if (await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.offline))) {
-      return { healthy: false, reason: 'offline' };
-    }
-
-    const contentWarningResult = await acceptContentWarning(page);
-    if (
-      contentWarningResult === 'accepted' &&
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.liveContent))
-    ) {
-      return { healthy: true, reason: 'live' };
-    }
-    if (contentWarningResult !== 'not_present') {
-      return { healthy: false, reason: 'content_warning' };
-    }
-
-    if (
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.liveContent))
-    ) {
-      return { healthy: true, reason: 'live' };
-    }
-
-    return { healthy: false, reason: 'live_content_missing' };
-  } catch (error: unknown) {
-    return {
-      healthy: false,
-      reason: 'health_check_error',
-      error: safeErrorMessage(error),
-    };
-  }
-}
-
-type ContentWarningAcceptResult = 'not_present' | 'accepted' | 'blocked';
-
-async function acceptContentWarning(
-  page: Page,
-): Promise<ContentWarningAcceptResult> {
-  const button = page.locator(CHANNEL_HEALTH_SELECTORS.contentWarning).first();
-  if (!(await isVisible(button))) {
-    return 'not_present';
-  }
-
-  try {
-    await button.click({ timeout: CONTENT_WARNING_SETTLE_TIMEOUT_MS });
-    await page
-      .locator(CHANNEL_HEALTH_SELECTORS.liveContent)
-      .first()
-      .waitFor({
-        state: 'visible',
-        timeout: CONTENT_WARNING_SETTLE_TIMEOUT_MS,
-      })
-      .catch(() => undefined);
-    return 'accepted';
-  } catch {
-    return 'blocked';
-  }
-}
-
-async function isVisible(locator: Locator): Promise<boolean> {
-  return locator.first().isVisible();
-}
-
-async function hasUnsupportedPlayerError(page: Page): Promise<boolean> {
-  try {
-    const playerText = (
-      await page
-      .locator(
-        [
-          '[data-a-target="player-error-message"]',
-          '[data-test-selector="video-player"]',
-          '[data-a-target="video-player"]',
-        ].join(', '),
-      )
-        .allTextContents()
-    ).join(' ');
-    return (
-      /This video is either unavailable or not supported in this browser/iu
-        .test(playerText) ||
-      /Error\s*#4000/iu.test(playerText)
-    );
-  } catch {
-    return false;
-  }
-}
-
-export function isExpectedChannelUrl(
-  currentUrl: string,
-  targetUrl: string,
-): boolean {
-  try {
-    const current = new URL(currentUrl);
-    const target = new URL(targetUrl);
-    return (
-      current.origin.toLocaleLowerCase('en-US') ===
-        target.origin.toLocaleLowerCase('en-US') &&
-      normalizePath(current.pathname) === normalizePath(target.pathname)
-    );
-  } catch {
-    return false;
-  }
-}
-
-function normalizePath(pathname: string): string {
-  const normalized = pathname.replace(/\/+$/u, '') || '/';
-  return normalized.toLocaleLowerCase('en-US');
-}
-
-export function stableJitter(value: string, maximumMs: number): number {
-  if (!Number.isSafeInteger(maximumMs) || maximumMs <= 0) {
-    return 0;
-  }
-  let hash = 2_166_136_261;
-  for (const character of value) {
-    hash ^= character.codePointAt(0) ?? 0;
-    hash = Math.imul(hash, 16_777_619);
-  }
-  return (hash >>> 0) % maximumMs;
-}
-
 function validateConfiguredChannel(
   channel: string,
   configuredChannels: readonly string[],
@@ -1199,33 +1019,4 @@ function positiveInteger(
     value > 0
     ? value
     : fallback;
-}
-
-function safeErrorMessage(error: unknown): string {
-  let message = 'Unknown channel session failure';
-  try {
-    if (error instanceof Error) {
-      message = error.message;
-    } else if (typeof error === 'string') {
-      message = error;
-    } else if (error !== undefined && error !== null) {
-      message = String(error);
-    }
-  } catch {
-    message = 'Unserializable channel session failure';
-  }
-  return redactSensitiveString(message);
-}
-
-function safeLog(
-  logger: ChannelSessionLogger,
-  level: 'debug' | 'info' | 'warn' | 'error',
-  event: string,
-  fields: LogFields,
-): void {
-  try {
-    logger[level](event, fields);
-  } catch {
-    // Logging must not break session cleanup or timer callbacks.
-  }
 }

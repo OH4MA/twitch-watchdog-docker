@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Logger } from '../../src/logging/index.js';
+import type { BotCommandContext } from '../../src/notifications/BotCommandContext.js';
 import type { WatchdogScheduler } from '../../src/scheduler/index.js';
 import type { SessionManager } from '../../src/sessions/index.js';
 import {
@@ -380,6 +381,20 @@ function createHarness(
     error: vi.fn(),
     flush: vi.fn(async () => undefined),
   } satisfies Logger;
+  const commandContext: BotCommandContext = {
+    runCheck: () => scheduler.runOnce(),
+    pauseChecks: () => scheduler.stop(),
+    resumeChecks: () => scheduler.start(),
+    getSchedulerSnapshot: () => scheduler.getSnapshot(),
+    getActiveChannels: () => sessionManager.getActiveChannels(),
+    getRefreshStatuses: () => sessionManager.getRefreshStatuses(),
+    refreshPages: (channel) => sessionManager.refreshPages(channel),
+    captureScreenshot: (channel) => sessionManager.captureScreenshot(channel),
+    getConfig: () => runtimeConfigManager.getConfig(),
+    setChannels: (channels) => runtimeConfigManager.setChannels(channels),
+    setMaxConcurrentStreams: (value) =>
+      runtimeConfigManager.setMaxConcurrentStreams(value),
+  };
   const bot = new DefaultTelegramBot({
     config: createTestConfig({
       telegram: {
@@ -390,9 +405,7 @@ function createHarness(
       },
     }),
     api,
-    scheduler,
-    sessionManager,
-    runtimeConfigManager,
+    commandContext,
     logger,
   });
 
