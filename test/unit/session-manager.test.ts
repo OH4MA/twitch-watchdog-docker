@@ -240,6 +240,79 @@ describe('DefaultSessionManager', () => {
     );
   });
 
+  it('啟動失敗為瀏覽器關閉時會清理舊 session 並短重試', async () => {
+    const failed = createSession('channel', {
+      onStart: async () => {
+        throw new Error(
+          'page.goto: Target page, context or browser has been closed',
+        );
+      },
+    });
+    const healthy = createSession('channel');
+    const factory = createFactory((_channel, creationIndex) =>
+      creationIndex === 0 ? failed : healthy,
+    );
+    const logger = createLogger();
+    const sleeps: number[] = [];
+    const manager = new DefaultSessionManager(factory, {
+      logger,
+      startRetryAttempts: 1,
+      startRetryDelayMs: 2_000,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+      },
+    });
+
+    await manager.reconcile(['channel']);
+
+    expect(manager.getActiveChannels()).toEqual(['channel']);
+    expect(factory.create).toHaveBeenCalledTimes(2);
+    expect(failed.stop).toHaveBeenCalledWith('start_failed');
+    expect(healthy.start).toHaveBeenCalledOnce();
+    expect(sleeps).toEqual([2_000]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'session_start_retry_scheduled',
+      expect.objectContaining({
+        channel: 'channel',
+        attempt: 1,
+        retryInMs: 2_000,
+      }),
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('新增多個 session 時會在後續啟動前套用間隔', async () => {
+    const events: string[] = [];
+    const factory = createFactory((channel) =>
+      createSession(channel, {
+        onStart: async () => {
+          events.push(`start:${channel}`);
+        },
+      }),
+    );
+    const manager = new DefaultSessionManager(factory, {
+      startStaggerMs: 1_000,
+      sleep: async (milliseconds) => {
+        events.push(`sleep:${milliseconds}`);
+      },
+    });
+
+    await manager.reconcile(['first', 'second', 'third']);
+
+    expect(events).toEqual([
+      'start:first',
+      'sleep:1000',
+      'start:second',
+      'sleep:1000',
+      'start:third',
+    ]);
+    expect(manager.getActiveChannels()).toEqual([
+      'first',
+      'second',
+      'third',
+    ]);
+  });
+
   it('factory failure 不影響後續頻道，下一輪可重試', async () => {
     let failedOnce = false;
     const factory = createFactory((channel) => {

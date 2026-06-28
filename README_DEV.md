@@ -111,6 +111,14 @@ Reward claim recovery events:
 - `container_restart_requested`：重整後仍連續失敗，程序將以非 0 狀態結束，交由 Docker restart policy 重啟容器。
   Reward failures continued after the recovery refresh, so the process exits non-zero and Docker restart policy restarts the container.
 
+Session 啟動相關事件：
+Session startup events:
+
+- `session_start_retry_scheduled`：啟動 session 時遇到瀏覽器或 page 剛關閉，會短暫等待後重試一次。
+  A session start hit a just-closed browser or page, so the manager waits briefly and retries once.
+- `session_start_failed`：session 啟動最終失敗；該頻道不會留在 active registry，其他頻道會繼續處理。
+  Session startup ultimately failed; that channel is not kept in the active registry, and other channels continue processing.
+
 容器資源：
 
 ```bash

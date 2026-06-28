@@ -37,19 +37,31 @@ export interface SessionScreenshot {
 }
 
 export type SessionManagerLogger = Pick<Logger, 'error' | 'warn'>;
+export type SessionManagerSleep = (milliseconds: number) => Promise<void>;
 
 export interface SessionManagerDependencies {
   readonly logger?: SessionManagerLogger;
+  readonly sleep?: SessionManagerSleep;
+  readonly startRetryAttempts?: number;
+  readonly startRetryDelayMs?: number;
+  readonly startStaggerMs?: number;
 }
 
 const NOOP_LOGGER: SessionManagerLogger = {
   error(): void {},
   warn(): void {},
 };
+const DEFAULT_START_RETRY_ATTEMPTS = 0;
+const DEFAULT_START_RETRY_DELAY_MS = 0;
+const DEFAULT_START_STAGGER_MS = 0;
 
 export class DefaultSessionManager implements SessionManager {
   private readonly sessions = new Map<string, ChannelSession>();
   private readonly logger: SessionManagerLogger;
+  private readonly sleep: SessionManagerSleep;
+  private readonly maxStartAttempts: number;
+  private readonly startRetryDelayMs: number;
+  private readonly startStaggerMs: number;
   private operationTail: Promise<void> = Promise.resolve();
 
   public constructor(
@@ -57,6 +69,20 @@ export class DefaultSessionManager implements SessionManager {
     dependencies: SessionManagerDependencies = {},
   ) {
     this.logger = dependencies.logger ?? NOOP_LOGGER;
+    this.sleep = dependencies.sleep ?? defaultSleep;
+    this.maxStartAttempts =
+      1 + normalizeNonNegativeInteger(
+        dependencies.startRetryAttempts,
+        DEFAULT_START_RETRY_ATTEMPTS,
+      );
+    this.startRetryDelayMs = normalizeNonNegativeInteger(
+      dependencies.startRetryDelayMs,
+      DEFAULT_START_RETRY_DELAY_MS,
+    );
+    this.startStaggerMs = normalizeNonNegativeInteger(
+      dependencies.startStaggerMs,
+      DEFAULT_START_STAGGER_MS,
+    );
   }
 
   public async reconcile(activeChannels: readonly string[]): Promise<void> {
@@ -74,12 +100,18 @@ export class DefaultSessionManager implements SessionManager {
         await this.stopSession(session, channel, 'inactive');
       }
 
+      let hasAttemptedStart = false;
       for (const channel of desiredChannels) {
         if (this.sessions.has(channel)) {
           continue;
         }
 
+        if (hasAttemptedStart && this.startStaggerMs > 0) {
+          await this.sleep(this.startStaggerMs);
+        }
+
         await this.startSession(channel);
+        hasAttemptedStart = true;
       }
 
       this.reorderSessions(desiredChannels);
@@ -169,20 +201,43 @@ export class DefaultSessionManager implements SessionManager {
   }
 
   private async startSession(channel: string): Promise<void> {
-    let session: ChannelSession | undefined;
+    for (let attempt = 1; attempt <= this.maxStartAttempts; attempt += 1) {
+      let session: ChannelSession | undefined;
 
-    try {
-      session = await this.factory.create(channel);
-      await session.start();
-      this.sessions.set(channel, session);
-    } catch (error: unknown) {
-      this.safeLog('error', 'session_start_failed', {
-        channel,
-        error: safeErrorMessage(error),
-      });
+      try {
+        session = await this.factory.create(channel);
+        await session.start();
+        this.sessions.set(channel, session);
+        return;
+      } catch (error: unknown) {
+        const safeError = safeErrorMessage(error);
 
-      if (session !== undefined) {
-        await this.cleanupFailedStart(session, channel);
+        if (session !== undefined) {
+          await this.cleanupFailedStart(session, channel);
+        }
+
+        const shouldRetry =
+          attempt < this.maxStartAttempts &&
+          isRetriableSessionStartError(safeError);
+
+        if (!shouldRetry) {
+          this.safeLog('error', 'session_start_failed', {
+            channel,
+            error: safeError,
+          });
+          return;
+        }
+
+        this.safeLog('warn', 'session_start_retry_scheduled', {
+          channel,
+          attempt,
+          retryInMs: this.startRetryDelayMs,
+          error: safeError,
+        });
+
+        if (this.startRetryDelayMs > 0) {
+          await this.sleep(this.startRetryDelayMs);
+        }
       }
     }
   }
@@ -270,6 +325,31 @@ function optionalEntry(
   entry: readonly [string, ChannelSession] | undefined,
 ): readonly (readonly [string, ChannelSession])[] {
   return entry === undefined ? [] : [entry];
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+}
+
+function normalizeNonNegativeInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.trunc(value));
+}
+
+function isRetriableSessionStartError(message: string): boolean {
+  return /Target page, context or browser has been closed/iu.test(message) ||
+    /browser(?: manager)? (?:has been )?closed/iu.test(message) ||
+    /context .*closed/iu.test(message) ||
+    /page .*closed/iu.test(message) ||
+    /Browser Manager 尚未啟動/iu.test(message);
 }
 
 function safeErrorMessage(error: unknown): string {

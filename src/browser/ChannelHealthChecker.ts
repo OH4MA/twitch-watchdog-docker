@@ -12,7 +12,6 @@ export const CHANNEL_HEALTH_SELECTORS = Object.freeze({
     '[data-channel-health="login-required"]',
   ].join(', '),
   liveContent: [
-    'video',
     '[data-a-target="video-player"]',
     '[data-test-selector="video-player"]',
     '[data-channel-health="live"]',
@@ -79,6 +78,12 @@ export async function evaluateChannelHealth(
     }
 
     if (
+      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.loginRequired))
+    ) {
+      return { healthy: false, reason: 'login_required' };
+    }
+
+    if (
       await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.error)) ||
       await hasUnsupportedPlayerError(page)
     ) {
@@ -104,12 +109,6 @@ export async function evaluateChannelHealth(
       await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.liveContent))
     ) {
       return { healthy: true, reason: 'live' };
-    }
-
-    if (
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.loginRequired))
-    ) {
-      return { healthy: false, reason: 'login_required' };
     }
 
     return { healthy: false, reason: 'live_content_missing' };
@@ -147,13 +146,7 @@ export async function acceptContentWarning(
 }
 
 async function isVisible(locator: Locator): Promise<boolean> {
-  const count = Math.min(await locator.count(), 10);
-  for (let index = 0; index < count; index += 1) {
-    if (await locator.nth(index).isVisible()) {
-      return true;
-    }
-  }
-  return false;
+  return locator.first().isVisible();
 }
 
 async function hasUnsupportedPlayerError(page: Page): Promise<boolean> {

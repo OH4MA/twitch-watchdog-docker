@@ -144,6 +144,9 @@ export function createDefaultRuntime(
 
   const sessionManager = new DefaultSessionManager(sessionFactory, {
     logger,
+    startRetryAttempts: 1,
+    startRetryDelayMs: 2_000,
+    startStaggerMs: 1_000,
   });
   sessionManagerReference.current = sessionManager;
 
