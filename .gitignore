@@ -13,14 +13,7 @@ data/browser-state/
 *.storage-state.json
 storage-state.json
 
-doc/current_progress.md
-doc/detailed-design.md
-doc/optimization.md
-doc/prompt.md
-doc/proposal.md
-doc/tasks/
-doc/improvement_recommendations.md
-doc/research-brief-browser-alternatives.md
+doc/
 
 .agents/
 .codex/
