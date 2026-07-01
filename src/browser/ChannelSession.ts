@@ -294,7 +294,6 @@ export class DefaultChannelSession implements ChannelSession {
 
       this.currentState = 'stopping';
       this.clearTimers();
-      await this.waitForCurrentWork();
       this.page = undefined;
 
       try {
@@ -907,20 +906,6 @@ export class DefaultChannelSession implements ChannelSession {
       this.currentState === 'watching' ||
       this.currentState === 'recovering'
     );
-  }
-
-  private async waitForCurrentWork(): Promise<void> {
-    const currentWork: Promise<unknown>[] = [];
-    if (this.healthFlight !== undefined) {
-      currentWork.push(this.healthFlight);
-    }
-    if (this.rewardFlight !== undefined) {
-      currentWork.push(this.rewardFlight);
-    }
-    if (this.reloadFlight !== undefined) {
-      currentWork.push(this.reloadFlight);
-    }
-    await Promise.allSettled(currentWork);
   }
 
   private async closePageForCleanup(reason: string): Promise<void> {

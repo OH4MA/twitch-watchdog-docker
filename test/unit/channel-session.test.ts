@@ -955,7 +955,7 @@ describe('DefaultChannelSession', () => {
     await session.stop('test_complete');
   });
 
-  it('stop 會等待進行中的定時刷新完成再關閉 page', async () => {
+  it('stop 不會被進行中的定時刷新卡住', async () => {
     vi.useFakeTimers();
     const reload = deferred<null>();
     const mockPage = createMockPage({
@@ -979,11 +979,12 @@ describe('DefaultChannelSession', () => {
 
     const stopPromise = session.stop('shutdown');
     await Promise.resolve();
-    expect(browser.closePage).not.toHaveBeenCalled();
+    await expect(stopPromise).resolves.toBeUndefined();
+    expect(browser.closePage).toHaveBeenCalledOnce();
+    expect(session.state).toBe('stopped');
 
     reload.resolve(null);
-    await stopPromise;
-    expect(browser.closePage).toHaveBeenCalledOnce();
+    await Promise.resolve();
   });
 
   it('RewardClaimer 拋錯時轉為 click_failed 且避免 timer rejection', async () => {
