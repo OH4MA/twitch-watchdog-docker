@@ -193,7 +193,17 @@ describe('DefaultWatchdogScheduler', () => {
     harness.scheduler.start();
     await vi.waitFor(() => {
       expect(harness.getLiveStatuses).toHaveBeenCalledOnce();
-      expect(loggerCallCount(harness.logger)).toBeGreaterThan(0);
+      if (error instanceof TwitchApiAuthError) {
+        expect(harness.logger.error).toHaveBeenCalledWith(
+          LOG_EVENTS.TWITCH_API_AUTH_FAILED,
+          { statusCode: error.statusCode },
+        );
+      } else {
+        expect(harness.logger.warn).toHaveBeenCalledWith(
+          'twitch_api_temporary_error',
+          { reason: error.reason, statusCode: error.statusCode },
+        );
+      }
     });
 
     timer.fire();
@@ -516,15 +526,6 @@ function createLoggerMock() {
     error: vi.fn<Logger['error']>(),
     flush: vi.fn<Logger['flush']>().mockResolvedValue(undefined),
   };
-}
-
-function loggerCallCount(logger: ReturnType<typeof createLoggerMock>): number {
-  return (
-    logger.debug.mock.calls.length +
-    logger.info.mock.calls.length +
-    logger.warn.mock.calls.length +
-    logger.error.mock.calls.length
-  );
 }
 
 function createTimer() {

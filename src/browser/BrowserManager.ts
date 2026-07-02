@@ -44,6 +44,7 @@ const DEFAULT_RESTART_BACKOFF_MS = 1_000;
 const DEFAULT_RESTART_BACKOFF_MAX_MS = 30_000;
 const DEFAULT_MAX_AUTOMATIC_RESTART_ATTEMPTS = 3;
 const DEFAULT_RESTART_ATTEMPT_RESET_MS = 60_000;
+const DEFAULT_RESOURCE_CLOSE_TIMEOUT_MS = 10_000;
 
 const NOOP_LOGGER: BrowserManagerLogger = {
   debug(): void {},
@@ -62,6 +63,7 @@ export class DefaultBrowserManager implements BrowserManager {
   private readonly restartBackoffMaxMs: number;
   private readonly maxAutomaticRestartAttempts: number;
   private readonly restartAttemptResetMs: number;
+  private readonly resourceCloseTimeoutMs: number;
 
   private browser: BrowserAdapter | undefined;
   private context: BrowserContextAdapter | undefined;
@@ -106,6 +108,10 @@ export class DefaultBrowserManager implements BrowserManager {
     this.restartAttemptResetMs = positiveInteger(
       dependencies.restartAttemptResetMs,
       DEFAULT_RESTART_ATTEMPT_RESET_MS,
+    );
+    this.resourceCloseTimeoutMs = positiveInteger(
+      dependencies.resourceCloseTimeoutMs,
+      DEFAULT_RESOURCE_CLOSE_TIMEOUT_MS,
     );
   }
 
@@ -187,7 +193,11 @@ export class DefaultBrowserManager implements BrowserManager {
       this.detachPageListeners(entry);
 
       try {
-        await entry.adapter.close();
+        await this.closePageAdapterWithTimeout(
+          entry.adapter,
+          channel,
+          'close',
+        );
         if (this.pages.get(channel) === entry) {
           this.pages.delete(channel);
         }
@@ -388,12 +398,26 @@ export class DefaultBrowserManager implements BrowserManager {
       'page_crashed' | 'page_closed'
     >,
   ): Promise<void> {
+    const startedAtMs = Date.now();
+    this.logger.debug('browser_page_invalidation_started', {
+      channel,
+      reason,
+      pageCountBefore: this.pages.size,
+    });
     let shouldNotify: boolean;
 
     try {
       shouldNotify = await this.runExclusive(async () => {
         const entry = this.pages.get(channel);
         if (entry === undefined || entry.adapter !== adapter) {
+          this.logger.debug('browser_page_invalidation_completed', {
+            channel,
+            reason,
+            pageKnown: false,
+            notified: false,
+            pageCountAfter: this.pages.size,
+            durationMs: Date.now() - startedAtMs,
+          });
           return false;
         }
 
@@ -405,6 +429,14 @@ export class DefaultBrowserManager implements BrowserManager {
         }
 
         this.logger.warn(reason, { channel });
+        this.logger.debug('browser_page_invalidation_completed', {
+          channel,
+          reason,
+          pageKnown: true,
+          notified: true,
+          pageCountAfter: this.pages.size,
+          durationMs: Date.now() - startedAtMs,
+        });
         return true;
       });
     } catch (error: unknown) {
@@ -418,6 +450,11 @@ export class DefaultBrowserManager implements BrowserManager {
 
     if (shouldNotify) {
       await this.notifyInvalidation({ channel, reason });
+      this.logger.debug('browser_page_invalidation_notified', {
+        channel,
+        reason,
+        durationMs: Date.now() - startedAtMs,
+      });
     }
   }
 
@@ -628,7 +665,7 @@ export class DefaultBrowserManager implements BrowserManager {
     }
 
     try {
-      await adapter.close();
+      await this.closePageAdapterWithTimeout(adapter, channel, phase);
     } catch (error: unknown) {
       this.logger.warn('browser_page_cleanup_failed', {
         ...(channel === undefined ? {} : { channel }),
@@ -648,13 +685,81 @@ export class DefaultBrowserManager implements BrowserManager {
     }
 
     try {
-      await resource.close();
+      await this.closeWithTimeout(
+        resource.close(),
+        event.replace('_failed', '_timeout'),
+        { phase },
+      );
     } catch (error: unknown) {
       this.logger.warn(event, {
         phase,
         error: this.safeError(error),
       });
     }
+  }
+
+  private async closePageAdapterWithTimeout(
+    adapter: BrowserPageAdapter,
+    channel: string | undefined,
+    phase: string,
+  ): Promise<void> {
+    await this.closeWithTimeout(
+      adapter.close(),
+      'browser_page_close_timeout',
+      {
+        ...(channel === undefined ? {} : { channel }),
+        phase,
+      },
+    );
+  }
+
+  private async closeWithTimeout(
+    closePromise: Promise<void>,
+    timeoutEvent: string,
+    fields: Readonly<Record<string, unknown>>,
+  ): Promise<void> {
+    const startedAtMs = Date.now();
+    this.logger.debug('browser_resource_close_started', {
+      ...fields,
+      timeoutEvent,
+      timeoutMs: this.resourceCloseTimeoutMs,
+    });
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    closePromise.catch(() => undefined);
+
+    const didTimeOut = await Promise.race([
+      closePromise.then(() => false),
+      new Promise<true>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          resolve(true);
+        }, this.resourceCloseTimeoutMs);
+      }),
+    ]);
+
+    if (timeoutHandle !== undefined) {
+      clearTimeout(timeoutHandle);
+    }
+
+    if (didTimeOut) {
+      this.logger.warn(timeoutEvent, {
+        ...fields,
+        timeoutMs: this.resourceCloseTimeoutMs,
+      });
+      this.logger.debug('browser_resource_close_completed', {
+        ...fields,
+        timeoutEvent,
+        timedOut: true,
+        durationMs: Date.now() - startedAtMs,
+      });
+      return;
+    }
+
+    this.logger.debug('browser_resource_close_completed', {
+      ...fields,
+      timeoutEvent,
+      timedOut: false,
+      durationMs: Date.now() - startedAtMs,
+    });
   }
 
   private detachPageListeners(entry: PageEntry): void {

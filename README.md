@@ -145,6 +145,14 @@ docker compose logs -f twitch-watchdog
 docker compose logs --no-log-prefix twitch-watchdog
 ```
 
+若要排查排程卡住、page crash 或瀏覽器清理問題，可暫時將 `config.yml` 的 `log_level` 設為 `debug` 後重啟服務。
+To diagnose stuck scheduler ticks, page crashes, or browser cleanup issues, temporarily set `log_level` to `debug` in `config.yml` and restart the service.
+
+```bash
+docker compose logs --no-log-prefix twitch-watchdog \
+  | rg 'scheduler_tick_|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
+```
+
 常用操作：
 
 ```bash

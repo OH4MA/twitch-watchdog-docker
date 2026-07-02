@@ -96,6 +96,7 @@ export interface BrowserManagerDependencies {
   readonly onInvalidated?: BrowserInvalidationObserver;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly now?: () => number;
+  readonly resourceCloseTimeoutMs?: number;
   readonly restartBackoffMs?: number;
   readonly restartBackoffMaxMs?: number;
   readonly maxAutomaticRestartAttempts?: number;

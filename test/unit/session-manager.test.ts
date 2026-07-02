@@ -79,6 +79,7 @@ function createFactory(
 
 function createLogger(): SessionManagerLogger {
   return {
+    debug: vi.fn(),
     error: vi.fn(),
     warn: vi.fn(),
   };

@@ -36,7 +36,7 @@ export interface SessionScreenshot {
   readonly image: Buffer;
 }
 
-export type SessionManagerLogger = Pick<Logger, 'error' | 'warn'>;
+export type SessionManagerLogger = Pick<Logger, 'debug' | 'error' | 'warn'>;
 export type SessionManagerSleep = (milliseconds: number) => Promise<void>;
 
 export interface SessionManagerDependencies {
@@ -48,6 +48,7 @@ export interface SessionManagerDependencies {
 }
 
 const NOOP_LOGGER: SessionManagerLogger = {
+  debug(): void {},
   error(): void {},
   warn(): void {},
 };
@@ -87,9 +88,16 @@ export class DefaultSessionManager implements SessionManager {
 
   public async reconcile(activeChannels: readonly string[]): Promise<void> {
     const desiredChannels = uniqueChannels(activeChannels);
+    const startedAtMs = Date.now();
+    this.safeLog('debug', 'session_reconcile_started', {
+      desiredChannels,
+      activeBefore: this.getActiveChannels(),
+    });
 
     await this.runExclusive(async () => {
       const desiredChannelSet = new Set(desiredChannels);
+      let stoppedCount = 0;
+      let startedCount = 0;
 
       for (const [channel, session] of [...this.sessions]) {
         if (desiredChannelSet.has(channel)) {
@@ -98,6 +106,7 @@ export class DefaultSessionManager implements SessionManager {
 
         this.sessions.delete(channel);
         await this.stopSession(session, channel, 'inactive');
+        stoppedCount += 1;
       }
 
       let hasAttemptedStart = false;
@@ -111,10 +120,20 @@ export class DefaultSessionManager implements SessionManager {
         }
 
         await this.startSession(channel);
+        if (this.sessions.has(channel)) {
+          startedCount += 1;
+        }
         hasAttemptedStart = true;
       }
 
       this.reorderSessions(desiredChannels);
+      this.safeLog('debug', 'session_reconcile_completed', {
+        desiredChannels,
+        activeAfter: this.getActiveChannels(),
+        stoppedCount,
+        startedCount,
+        durationMs: Date.now() - startedAtMs,
+      });
     });
   }
 
@@ -130,14 +149,35 @@ export class DefaultSessionManager implements SessionManager {
   }
 
   public async invalidate(channel: string, reason: string): Promise<void> {
+    const startedAtMs = Date.now();
+    this.safeLog('debug', 'session_invalidate_started', {
+      channel,
+      reason,
+      activeBefore: this.getActiveChannels(),
+    });
+
     await this.runExclusive(async () => {
       const session = this.sessions.get(channel);
       if (session === undefined) {
+        this.safeLog('debug', 'session_invalidate_completed', {
+          channel,
+          reason,
+          removed: false,
+          activeAfter: this.getActiveChannels(),
+          durationMs: Date.now() - startedAtMs,
+        });
         return;
       }
 
       this.sessions.delete(channel);
       await this.stopSession(session, channel, reason);
+      this.safeLog('debug', 'session_invalidate_completed', {
+        channel,
+        reason,
+        removed: true,
+        activeAfter: this.getActiveChannels(),
+        durationMs: Date.now() - startedAtMs,
+      });
     });
   }
 
@@ -203,11 +243,22 @@ export class DefaultSessionManager implements SessionManager {
   private async startSession(channel: string): Promise<void> {
     for (let attempt = 1; attempt <= this.maxStartAttempts; attempt += 1) {
       let session: ChannelSession | undefined;
+      const startedAtMs = Date.now();
 
       try {
+        this.safeLog('debug', 'session_start_attempt_started', {
+          channel,
+          attempt,
+          maxAttempts: this.maxStartAttempts,
+        });
         session = await this.factory.create(channel);
         await session.start();
         this.sessions.set(channel, session);
+        this.safeLog('debug', 'session_start_attempt_completed', {
+          channel,
+          attempt,
+          durationMs: Date.now() - startedAtMs,
+        });
         return;
       } catch (error: unknown) {
         const safeError = safeErrorMessage(error);

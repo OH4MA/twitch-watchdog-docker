@@ -1,6 +1,10 @@
 import type { AppConfig } from '../config/index.js';
 import type { RuntimeWatchConfig } from '../config/index.js';
-import { LOG_EVENTS, type Logger } from '../logging/index.js';
+import {
+  LOG_EVENTS,
+  redactSensitiveString,
+  type Logger,
+} from '../logging/index.js';
 import {
   TwitchApiAuthError,
   TwitchApiRateLimitError,
@@ -83,6 +87,7 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
   private lastCheckedAt: Date | undefined;
   private started = false;
   private runtimeConfig: RuntimeWatchConfig;
+  private tickSequence = 0;
 
   public constructor(
     private readonly options: DefaultWatchdogSchedulerOptions,
@@ -136,8 +141,32 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
       return Promise.resolve();
     }
 
-    const execution = this.executeTick();
-    const trackedExecution = execution.finally(() => {
+    const tickId = this.nextTickId();
+    const startedAtMs = Date.now();
+    this.options.logger.debug('scheduler_tick_started', {
+      tickId,
+      channelCount: this.runtimeConfig.channels.length,
+      maxConcurrentStreams: this.runtimeConfig.maxConcurrentStreams,
+    });
+
+    const execution = this.executeTick(tickId);
+    const trackedExecution = execution.then(
+      () => {
+        this.options.logger.debug('scheduler_tick_completed', {
+          tickId,
+          durationMs: Date.now() - startedAtMs,
+        });
+      },
+      (error: unknown) => {
+        this.options.logger.error('scheduler_tick_failed', {
+          tickId,
+          reason: 'unexpected_error',
+          durationMs: Date.now() - startedAtMs,
+          error: safeErrorMessage(error),
+        });
+        throw error;
+      },
+    ).finally(() => {
       if (this.inFlight === trackedExecution) {
         this.inFlight = undefined;
       }
@@ -198,14 +227,10 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
   }
 
   private triggerTick(): void {
-    void this.runOnce().catch(() => {
-      this.options.logger.error('scheduler_tick_failed', {
-        reason: 'unexpected_error',
-      });
-    });
+    void this.runOnce().catch(() => undefined);
   }
 
-  private async executeTick(): Promise<void> {
+  private async executeTick(tickId: number): Promise<void> {
     let liveStatuses: ChannelLiveStatus[];
 
     try {
@@ -239,6 +264,12 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
         maxConcurrentStreams:
           this.runtimeConfig.maxConcurrentStreams,
       });
+
+    this.options.logger.debug('scheduler_tick_selection', {
+      tickId,
+      liveCount: liveStatuses.filter((status) => status.isLive).length,
+      activeChannels,
+    });
 
     await this.options.sessionManager.reconcile(activeChannels);
   }
@@ -373,6 +404,11 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
       this.previousLiveStatuses.set(channel, isLive);
     }
   }
+
+  private nextTickId(): number {
+    this.tickSequence = (this.tickSequence % Number.MAX_SAFE_INTEGER) + 1;
+    return this.tickSequence;
+  }
 }
 
 function normalizeChannel(channel: string): string {
@@ -386,4 +422,12 @@ function freezeRuntimeConfig(
     channels: Object.freeze([...config.channels]),
     maxConcurrentStreams: config.maxConcurrentStreams,
   });
+}
+
+function safeErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return redactSensitiveString(error.message);
+  }
+
+  return redactSensitiveString(String(error));
 }

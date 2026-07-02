@@ -48,6 +48,11 @@ function createLogger(): BrowserManagerLogger {
 class MockPageAdapter implements BrowserPageAdapter {
   public readonly page: Page;
   public readonly close = vi.fn(async (): Promise<void> => {
+    if (this.closeImplementation !== undefined) {
+      await this.closeImplementation();
+      return;
+    }
+
     const failure = this.closeFailures.shift();
     if (failure !== undefined) {
       throw failure;
@@ -62,6 +67,7 @@ class MockPageAdapter implements BrowserPageAdapter {
   private readonly closeListeners = new Set<() => void>();
   private readonly popupListeners = new Set<(popup: Page) => void>();
   private readonly closeFailures: Error[] = [];
+  public closeImplementation: (() => Promise<void>) | undefined;
 
   public constructor(public readonly name: string) {
     this.page = { mockPageName: name } as unknown as Page;
@@ -821,6 +827,46 @@ describe('DefaultBrowserManager', () => {
     await expect(manager.createPage('channel')).resolves.toBe(
       replacementPage.page,
     );
+  });
+
+  it('page close 卡住時會 timeout 並允許後續重建', async () => {
+    vi.useFakeTimers();
+    const failedPage = new MockPageAdapter('failed');
+    failedPage.closeImplementation = () =>
+      new Promise<void>(() => undefined);
+    const replacementPage = new MockPageAdapter('replacement');
+    const context = new MockContextAdapter([failedPage, replacementPage]);
+    const logger = createLogger();
+    const invalidations: BrowserInvalidation[] = [];
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher: new MockLauncher([new MockBrowserAdapter(context)]),
+      logger,
+      onInvalidated: (invalidation) => {
+        invalidations.push(invalidation);
+      },
+      resourceCloseTimeoutMs: 100,
+    });
+    await manager.start();
+    await manager.createPage('channel');
+
+    const closePage = manager.closePage('channel');
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(closePage).resolves.toBeUndefined();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      'browser_page_close_timeout',
+      {
+        channel: 'channel',
+        phase: 'close',
+        timeoutMs: 100,
+      },
+    );
+    await expect(manager.createPage('channel')).resolves.toBe(
+      replacementPage.page,
+    );
+    expect(invalidations).toEqual([]);
+
+    vi.useRealTimers();
   });
 
   it('createPage 進行中呼叫 stop 時會等待建立完成後再清理', async () => {

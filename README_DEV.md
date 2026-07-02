@@ -136,6 +136,42 @@ docker compose logs --no-log-prefix twitch-watchdog \
 
 Benchmark 輸出屬於本機開發產物，已由 `.gitignore` 排除。
 
+## 詳細診斷 Log
+
+若要排查排程卡住、Playwright page crash 或瀏覽器資源關閉問題，將 `config.yml` 的 `log_level` 設為 `debug` 後重啟服務：
+To diagnose stuck scheduler ticks, Playwright page crashes, or browser resource cleanup issues, set `log_level` to `debug` in `config.yml` and restart the service:
+
+```yaml
+log_level: debug
+```
+
+常用診斷查詢：
+Useful diagnostic queries:
+
+```bash
+docker compose logs --no-log-prefix twitch-watchdog \
+  | rg 'scheduler_tick_|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
+```
+
+重點事件：
+Important events:
+
+- `scheduler_tick_started` / `scheduler_tick_selection` / `scheduler_tick_completed`：確認每輪排程是否有開始、選出哪些觀看頻道、以及是否完成。
+  Confirm whether each scheduler tick started, which active channels were selected, and whether the tick completed.
+- `scheduler_tick_failed`：排程 tick 發生未預期錯誤，會包含 `tickId`、耗時與已遮罩錯誤訊息。
+  Indicates an unexpected scheduler tick failure with `tickId`, duration, and a redacted error message.
+- `session_reconcile_started` / `session_reconcile_completed`：確認 SessionManager 是否進入 reconcile，以及 start/stop 後的 active session 清單。
+  Confirms whether SessionManager entered reconcile and what active sessions remained after start/stop work.
+- `session_invalidate_started` / `session_invalidate_completed`：確認 page crash 或 browser restart 是否真的移除 session。
+  Confirms whether a page crash or browser restart actually removed the affected session.
+- `browser_page_invalidation_started` / `browser_page_invalidation_completed` / `browser_page_invalidation_notified`：確認 BrowserManager 是否收到 page crash/close，是否刪除 page registry，以及是否通知 SessionManager。
+  Confirms whether BrowserManager received page crash/close, removed the page registry entry, and notified SessionManager.
+- `browser_resource_close_started` / `browser_resource_close_completed` / `browser_page_close_timeout`：確認卡住的是 page、context 或 browser close；timeout 事件代表清理超過保護上限。
+  Confirms whether page, context, or browser close is stuck; timeout events mean cleanup exceeded the guard limit.
+
+貼回問題 log 時，請保留同一段時間內的 `scheduler_tick_*`、`session_*`、`browser_*`、`page_*` 與 `runtime_resource_snapshot` 事件。
+When sharing logs for debugging, include `scheduler_tick_*`, `session_*`, `browser_*`, `page_*`, and `runtime_resource_snapshot` events from the same time window.
+
 ## 維護原則
 
 - 不要重新加入 Twitch Drops 自動領取或舊 GraphQL claim 流程。
