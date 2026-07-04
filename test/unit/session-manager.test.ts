@@ -241,6 +241,52 @@ describe('DefaultSessionManager', () => {
     );
   });
 
+  it('session start 卡住時會 timeout 並繼續啟動後續頻道', async () => {
+    vi.useFakeTimers();
+    try {
+      const stuck = createSession('stuck', {
+        onStart: async () => {
+          await new Promise(() => undefined);
+        },
+      });
+      const healthy = createSession('healthy');
+      const factory = createFactory((channel) =>
+        channel === 'stuck' ? stuck : healthy,
+      );
+      const logger = createLogger();
+      const manager = new DefaultSessionManager(factory, {
+        logger,
+        sessionOperationTimeoutMs: 1_000,
+      });
+
+      const reconcile = manager.reconcile(['stuck', 'healthy']);
+      await vi.waitFor(() => {
+        expect(stuck.start).toHaveBeenCalledOnce();
+      });
+      expect(healthy.start).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await reconcile;
+
+      expect(manager.getActiveChannels()).toEqual(['healthy']);
+      expect(healthy.start).toHaveBeenCalledOnce();
+      expect(logger.warn).toHaveBeenCalledWith(
+        'session_start_timeout',
+        {
+          channel: 'stuck',
+          attempt: 1,
+          timeoutMs: 1_000,
+        },
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        'session_start_failed',
+        expect.objectContaining({ channel: 'stuck' }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('啟動失敗為瀏覽器關閉時會清理舊 session 並短重試', async () => {
     const failed = createSession('channel', {
       onStart: async () => {
@@ -358,6 +404,37 @@ describe('DefaultSessionManager', () => {
         channel: 'first',
         reason: 'inactive',
       }),
+    );
+  });
+
+  it('截圖失敗時回傳 undefined 並記錄可診斷錯誤', async () => {
+    const logger = createLogger();
+    const stale = createSession('stale');
+    vi.mocked(stale.captureScreenshot).mockRejectedValue(
+      new Error('Target page has been closed'),
+    );
+    const healthy = createSession('healthy');
+    const manager = new DefaultSessionManager(
+      createFactory((channel) => (channel === 'stale' ? stale : healthy)),
+      { logger },
+    );
+    await manager.reconcile(['stale', 'healthy']);
+
+    await expect(manager.captureScreenshot()).resolves.toEqual({
+      channel: 'healthy',
+      image: Buffer.from('screenshot:healthy'),
+    });
+    await expect(manager.captureScreenshot('stale')).resolves.toBeUndefined();
+    await expect(manager.captureScreenshot('healthy')).resolves.toEqual({
+      channel: 'healthy',
+      image: Buffer.from('screenshot:healthy'),
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      'session_screenshot_failed',
+      {
+        channel: 'stale',
+        error: 'Target page has been closed',
+      },
     );
   });
 

@@ -4,7 +4,10 @@ import type {
 } from '../browser/index.js';
 import type { AppConfig } from '../config/index.js';
 import { ConfigValidationError } from '../config/index.js';
-import type { Logger } from '../logging/index.js';
+import {
+  redactSensitiveString,
+  type Logger,
+} from '../logging/index.js';
 import type { BotCommandContext } from '../notifications/BotCommandContext.js';
 import type { StreamStatusChange } from '../scheduler/index.js';
 import type {
@@ -142,9 +145,10 @@ export class DefaultTelegramBot implements TelegramBot {
           );
           try {
             await this.handleUpdate(update);
-          } catch {
+          } catch (error: unknown) {
             this.options.logger.warn('telegram_command_failed', {
               updateId: update.update_id,
+              error: safeErrorMessage(error),
             });
           }
         }
@@ -283,8 +287,7 @@ export class DefaultTelegramBot implements TelegramBot {
 
       let sentCount = 0;
       for (const channel of activeChannels) {
-        const screenshot =
-          await this.options.commandContext.captureScreenshot(channel);
+        const screenshot = await this.captureScreenshotSafely(channel);
         if (screenshot === undefined) {
           continue;
         }
@@ -301,24 +304,45 @@ export class DefaultTelegramBot implements TelegramBot {
       return;
     }
 
-    const screenshot = await this.options.commandContext.captureScreenshot(
-      requestedChannel,
-    );
+    const screenshot = await this.captureScreenshotSafely(requestedChannel);
     if (screenshot === undefined) {
       const activeChannels = this.options.commandContext.getActiveChannels();
+      const requestedIsActive = activeChannels.some(
+        (channel) =>
+          channel.toLocaleLowerCase('en-US') ===
+          requestedChannel.toLocaleLowerCase('en-US'),
+      );
       await this.options.api.sendMessage(
         chatId,
         activeChannels.length === 0
           ? '目前沒有正在觀看的頻道可供截圖。'
-          : [
-              `找不到正在觀看的頻道：${requestedChannel ?? ''}`,
-              `可用頻道：${activeChannels.join('、')}`,
-            ].join('\n'),
+          : requestedIsActive
+            ? `頻道目前無法截圖：${requestedChannel}`
+            : [
+                `找不到正在觀看的頻道：${requestedChannel ?? ''}`,
+                `可用頻道：${activeChannels.join('、')}`,
+              ].join('\n'),
       );
       return;
     }
 
     await this.sendSessionScreenshot(chatId, screenshot);
+  }
+
+  private async captureScreenshotSafely(
+    channel: string,
+  ): Promise<
+    Awaited<ReturnType<BotCommandContext['captureScreenshot']>>
+  > {
+    try {
+      return await this.options.commandContext.captureScreenshot(channel);
+    } catch (error: unknown) {
+      this.options.logger.warn('telegram_screenshot_failed', {
+        channel,
+        error: safeErrorMessage(error),
+      });
+      return undefined;
+    }
   }
 
   private async refreshPages(
@@ -671,6 +695,24 @@ function parseCommand(text: string): ParsedCommand | undefined {
     command,
     ...(argument === undefined ? {} : { argument }),
   };
+}
+
+function safeErrorMessage(error: unknown): string {
+  let message = 'Unknown Telegram command failure';
+
+  try {
+    if (error instanceof Error) {
+      message = error.message;
+    } else if (typeof error === 'string') {
+      message = error;
+    } else if (error !== undefined && error !== null) {
+      message = String(error);
+    }
+  } catch {
+    message = 'Unserializable Telegram command failure';
+  }
+
+  return redactSensitiveString(message);
 }
 
 function formatList(values: readonly string[]): string {

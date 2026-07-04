@@ -23,3 +23,7 @@ export {
   RuntimeResourceMonitor,
   type RuntimeResourceMonitorOptions,
 } from './RuntimeResourceMonitor.js';
+export {
+  SchedulerStallWatchdog,
+  type SchedulerStallWatchdogOptions,
+} from './SchedulerStallWatchdog.js';

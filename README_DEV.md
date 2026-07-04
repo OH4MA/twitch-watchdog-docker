@@ -96,7 +96,7 @@ Common log queries:
 ```bash
 docker compose logs -f twitch-watchdog
 docker compose logs --no-log-prefix twitch-watchdog
-docker compose logs --no-log-prefix twitch-watchdog | rg 'reward_claim_failure|container_restart_requested'
+docker compose logs --no-log-prefix twitch-watchdog | rg 'reward_claim_failure|container_restart_requested|scheduler_stall_detected'
 ```
 
 忠誠點數領取復原相關事件：
@@ -110,6 +110,8 @@ Reward claim recovery events:
   A channel page refresh was triggered by consecutive reward failures.
 - `container_restart_requested`：重整後仍連續失敗，程序將以非 0 狀態結束，交由 Docker restart policy 重啟容器。
   Reward failures continued after the recovery refresh, so the process exits non-zero and Docker restart policy restarts the container.
+- `scheduler_stall_detected`：排程檢查長時間停留在 in-flight，容器級 watchdog 會 flush log 後以非 0 狀態結束程序，交由 Docker restart policy 重啟容器。
+  A scheduler check remained in flight past the watchdog threshold, so the service flushes logs and exits non-zero for Docker restart policy recovery.
 
 Session 啟動相關事件：
 Session startup events:
@@ -150,7 +152,7 @@ Useful diagnostic queries:
 
 ```bash
 docker compose logs --no-log-prefix twitch-watchdog \
-  | rg 'scheduler_tick_|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
+  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
 ```
 
 重點事件：
@@ -160,6 +162,8 @@ Important events:
   Confirm whether each scheduler tick started, which active channels were selected, and whether the tick completed.
 - `scheduler_tick_failed`：排程 tick 發生未預期錯誤，會包含 `tickId`、耗時與已遮罩錯誤訊息。
   Indicates an unexpected scheduler tick failure with `tickId`, duration, and a redacted error message.
+- `scheduler_stall_watchdog_started` / `scheduler_stall_detected`：確認容器級 watchdog 的檢查間隔、卡住門檻，以及是否已要求容器重啟。
+  Confirms the container-level watchdog interval, stall threshold, and whether it requested container restart recovery.
 - `session_reconcile_started` / `session_reconcile_completed`：確認 SessionManager 是否進入 reconcile，以及 start/stop 後的 active session 清單。
   Confirms whether SessionManager entered reconcile and what active sessions remained after start/stop work.
 - `session_invalidate_started` / `session_invalidate_completed`：確認 page crash 或 browser restart 是否真的移除 session。

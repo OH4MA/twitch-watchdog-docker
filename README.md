@@ -14,6 +14,8 @@ Twitch Watchdog 是可用 Docker 長時間執行的 Twitch 觀看輔助服務。
 - 自動領取 Bonus Channel Points。
 - Bonus Channel Points 連續領取失敗 10 次時，會先重整該頻道頁面；重整後若再次連續失敗 10 次，會結束程序並交由 Docker restart policy 重啟容器。
   If Bonus Channel Points claiming fails 10 times in a row, the service first refreshes that channel page; if it fails 10 more times after the refresh, it exits so Docker can restart the container through the configured restart policy.
+- 排程檢查若長時間卡在執行中，容器級 watchdog 會記錄 `scheduler_stall_detected` 並結束程序，交由 Docker restart policy 重啟容器。
+  If scheduler checks remain in flight for too long, the container-level watchdog logs `scheduler_stall_detected` and exits so Docker restart policy restarts the container.
 - 預設將直播畫質維持在 `160p` 並靜音，降低長時間執行資源用量。
 - 可選用 Telegram Bot 或 Discord Bot 查詢狀態、管理頻道、暫停/恢復排程與取得截圖。
   Optional Telegram Bot or Discord Bot integrations can query status, manage channels, pause/resume checks, and capture screenshots.
@@ -150,7 +152,7 @@ To diagnose stuck scheduler ticks, page crashes, or browser cleanup issues, temp
 
 ```bash
 docker compose logs --no-log-prefix twitch-watchdog \
-  | rg 'scheduler_tick_|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
+  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
 ```
 
 常用操作：

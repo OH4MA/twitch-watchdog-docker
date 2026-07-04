@@ -112,7 +112,7 @@ describe('DefaultTelegramBot', () => {
     await vi.waitFor(() => {
       expect(harness.logger.warn).toHaveBeenCalledWith(
         'telegram_command_failed',
-        { updateId: 10 },
+        { updateId: 10, error: 'send failed' },
       );
     });
     await harness.bot.stop('test');
@@ -222,6 +222,39 @@ describe('DefaultTelegramBot', () => {
     expect(
       harness.sessionManager.captureScreenshot,
     ).toHaveBeenNthCalledWith(2, 'second');
+  });
+
+  it('未指定頻道截圖遇到 stale session 時會跳過並繼續回傳可用頻道', async () => {
+    const harness = createHarness(
+      [update(1, '42', '/screenshot')],
+      ['first', 'second'],
+    );
+    vi.mocked(harness.sessionManager.captureScreenshot)
+      .mockRejectedValueOnce(new Error('Target page has been closed'))
+      .mockResolvedValueOnce({
+        channel: 'second',
+        image: Buffer.from('screenshot:second'),
+      });
+
+    await harness.bot.start();
+    await vi.waitFor(() => {
+      expect(harness.api.sendPhoto).toHaveBeenCalledOnce();
+    });
+    await harness.bot.stop('test');
+
+    expect(harness.api.sendPhoto).toHaveBeenCalledWith(
+      '42',
+      Buffer.from('screenshot:second'),
+      'second.png',
+      'second 目前瀏覽器畫面',
+    );
+    expect(harness.logger.warn).toHaveBeenCalledWith(
+      'telegram_screenshot_failed',
+      {
+        channel: 'first',
+        error: 'Target page has been closed',
+      },
+    );
   });
 
   it('可由指令更新頻道清單與最大同時觀看', async () => {

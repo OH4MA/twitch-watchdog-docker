@@ -45,6 +45,7 @@ export interface SessionManagerDependencies {
   readonly startRetryAttempts?: number;
   readonly startRetryDelayMs?: number;
   readonly startStaggerMs?: number;
+  readonly sessionOperationTimeoutMs?: number;
 }
 
 const NOOP_LOGGER: SessionManagerLogger = {
@@ -55,6 +56,7 @@ const NOOP_LOGGER: SessionManagerLogger = {
 const DEFAULT_START_RETRY_ATTEMPTS = 0;
 const DEFAULT_START_RETRY_DELAY_MS = 0;
 const DEFAULT_START_STAGGER_MS = 0;
+const DEFAULT_SESSION_OPERATION_TIMEOUT_MS = 60_000;
 
 export class DefaultSessionManager implements SessionManager {
   private readonly sessions = new Map<string, ChannelSession>();
@@ -63,6 +65,7 @@ export class DefaultSessionManager implements SessionManager {
   private readonly maxStartAttempts: number;
   private readonly startRetryDelayMs: number;
   private readonly startStaggerMs: number;
+  private readonly sessionOperationTimeoutMs: number;
   private operationTail: Promise<void> = Promise.resolve();
 
   public constructor(
@@ -83,6 +86,10 @@ export class DefaultSessionManager implements SessionManager {
     this.startStaggerMs = normalizeNonNegativeInteger(
       dependencies.startStaggerMs,
       DEFAULT_START_STAGGER_MS,
+    );
+    this.sessionOperationTimeoutMs = normalizePositiveInteger(
+      dependencies.sessionOperationTimeoutMs,
+      DEFAULT_SESSION_OPERATION_TIMEOUT_MS,
     );
   }
 
@@ -225,19 +232,25 @@ export class DefaultSessionManager implements SessionManager {
   public async captureScreenshot(
     requestedChannel?: string,
   ): Promise<SessionScreenshot | undefined> {
-    const entry = requestedChannel === undefined
-      ? this.sessions.entries().next().value
-      : findSession(this.sessions, requestedChannel);
+    const entries = requestedChannel === undefined
+      ? [...this.sessions]
+      : optionalEntry(findSession(this.sessions, requestedChannel));
 
-    if (entry === undefined) {
-      return undefined;
+    for (const [channel, session] of entries) {
+      try {
+        return {
+          channel,
+          image: await session.captureScreenshot(),
+        };
+      } catch (error: unknown) {
+        this.safeLog('warn', 'session_screenshot_failed', {
+          channel,
+          error: safeErrorMessage(error),
+        });
+      }
     }
 
-    const [channel, session] = entry;
-    return {
-      channel,
-      image: await session.captureScreenshot(),
-    };
+    return undefined;
   }
 
   private async startSession(channel: string): Promise<void> {
@@ -252,7 +265,11 @@ export class DefaultSessionManager implements SessionManager {
           maxAttempts: this.maxStartAttempts,
         });
         session = await this.factory.create(channel);
-        await session.start();
+        await this.withSessionOperationTimeout(
+          session.start(),
+          'session_start_timeout',
+          { channel, attempt },
+        );
         this.sessions.set(channel, session);
         this.safeLog('debug', 'session_start_attempt_completed', {
           channel,
@@ -297,15 +314,7 @@ export class DefaultSessionManager implements SessionManager {
     session: ChannelSession,
     channel: string,
   ): Promise<void> {
-    try {
-      await session.stop('start_failed');
-    } catch (error: unknown) {
-      this.safeLog('warn', 'session_stop_failed', {
-        channel,
-        reason: 'start_failed',
-        error: safeErrorMessage(error),
-      });
-    }
+    await this.stopSession(session, channel, 'start_failed');
   }
 
   private async stopSession(
@@ -314,13 +323,49 @@ export class DefaultSessionManager implements SessionManager {
     reason: string,
   ): Promise<void> {
     try {
-      await session.stop(reason);
+      await this.withSessionOperationTimeout(
+        session.stop(reason),
+        'session_stop_timeout',
+        { channel, reason },
+      );
     } catch (error: unknown) {
       this.safeLog('warn', 'session_stop_failed', {
         channel,
         reason,
         error: safeErrorMessage(error),
       });
+    }
+  }
+
+  private async withSessionOperationTimeout<T>(
+    operation: Promise<T>,
+    timeoutEvent: string,
+    fields: LogFields,
+  ): Promise<T> {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    operation.catch(() => undefined);
+
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        this.safeLog('warn', timeoutEvent, {
+          ...fields,
+          timeoutMs: this.sessionOperationTimeoutMs,
+        });
+        reject(
+          new Error(
+            `${timeoutEvent} after ${this.sessionOperationTimeoutMs}ms`,
+          ),
+        );
+      }, this.sessionOperationTimeoutMs);
+      timeoutHandle.unref?.();
+    });
+
+    try {
+      return await Promise.race([operation, timeout]);
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
     }
   }
 
@@ -393,6 +438,21 @@ function normalizeNonNegativeInteger(
   }
 
   return Math.max(0, Math.trunc(value));
+}
+
+function normalizePositiveInteger(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (
+    value === undefined ||
+    !Number.isFinite(value) ||
+    Math.trunc(value) <= 0
+  ) {
+    return fallback;
+  }
+
+  return Math.trunc(value);
 }
 
 function isRetriableSessionStartError(message: string): boolean {

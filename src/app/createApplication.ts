@@ -45,6 +45,7 @@ import {
   type RuntimeFactory,
 } from './AppRunner.js';
 import { RuntimeResourceMonitor } from './RuntimeResourceMonitor.js';
+import { SchedulerStallWatchdog } from './SchedulerStallWatchdog.js';
 
 export interface CreateApplicationOptions {
   readonly configPath?: string;
@@ -147,6 +148,10 @@ export function createDefaultRuntime(
     startRetryAttempts: 1,
     startRetryDelayMs: 2_000,
     startStaggerMs: 1_000,
+    sessionOperationTimeoutMs: Math.max(
+      60_000,
+      config.browser.navigationTimeoutMs * 2,
+    ),
   });
   sessionManagerReference.current = sessionManager;
 
@@ -198,6 +203,15 @@ export function createDefaultRuntime(
       logger,
       intervalSeconds:
         config.browser.resourceTelemetryIntervalSeconds,
+    }),
+    new SchedulerStallWatchdog({
+      scheduler,
+      logger,
+      intervalSeconds: Math.min(60, config.checkIntervalSeconds),
+      stallThresholdMs: Math.max(
+        600_000,
+        config.checkIntervalSeconds * 5_000,
+      ),
     }),
     ...(config.telegram.enabled
       ? [
