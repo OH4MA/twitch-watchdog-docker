@@ -256,7 +256,7 @@ export class DefaultChannelSession implements ChannelSession {
         page.setDefaultNavigationTimeout(
           this.options.config.browser.navigationTimeoutMs,
         );
-        await page.goto(this.targetUrl);
+        await page.goto(this.targetUrl, { waitUntil: 'domcontentloaded' });
         if (!isExpectedChannelUrl(page.url(), this.targetUrl)) {
           throw new Error('頻道頁面導向非預期 Twitch URL');
         }

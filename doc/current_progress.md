@@ -72,6 +72,15 @@
 - `README.md` 與 `README_DEV.md` 已同步新增 `scheduler_stall_detected`、容器級 watchdog 說明與 log 查詢範例。
 - 已跑過 `npm run lint`、`npm run build`、`npm test`；目前 22 個 test files、301 tests 通過。未跑 E2E / Docker smoke。
 
+2026-07-09 補充：
+
+- 針對實機 log 出現 `page.goto: Timeout 30000ms exceeded`、`watch_start_failed` 與 `session_start_failed`，確認問題發生在 `ChannelSession.start()` 啟動階段導覽 Twitch 頁面時等待完整 `load` 事件逾時。
+- `ChannelSession.start()` 的 Twitch 頁面初始導覽已改為等待 `domcontentloaded`，避免第三方資源或長時間連線拖住完整 `load` 事件；後續仍保留 URL 檢查、內容警示處理與播放器最佳化。
+- `DefaultSessionManager` 現在會把 `page.goto` navigation timeout 視為可重試的 session startup failure，沿用既有啟動重試機制：清理失敗 session、等待 `startRetryDelayMs`，再重建 session 一次。
+- 新增單元測試覆蓋 `ChannelSession` 導覽等待條件，以及 Twitch navigation timeout 會觸發 `session_start_retry_scheduled` 而非直接 `session_start_failed`。
+- 已跑過 `npm run lint`、`npm run build`、`npm test`；目前 22 個 test files、302 tests 通過。
+- 已嘗試 `npm run test:e2e`，但 14 個 Playwright tests 都在 Chromium 啟動前因 macOS sandbox `MachPortRendezvousServer` permission denied 失敗，未進入測試斷言；未跑 Docker smoke。
+
 目前工作區狀態重點：
 
 - 本文件更新前 `git status --short` 顯示已修改 `README.md`、`README_DEV.md`、`src/app/createApplication.ts`、`src/app/index.ts`、`src/sessions/SessionManager.ts`、`src/telegram/TelegramBot.ts`、`test/unit/session-manager.test.ts`、`test/unit/telegram-bot.test.ts`，並新增 `src/app/SchedulerStallWatchdog.ts`、`test/unit/scheduler-stall-watchdog.test.ts`。

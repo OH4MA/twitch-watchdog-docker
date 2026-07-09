@@ -328,6 +328,47 @@ describe('DefaultSessionManager', () => {
     expect(logger.error).not.toHaveBeenCalled();
   });
 
+  it('啟動失敗為 Twitch 導覽逾時時會清理舊 session 並短重試', async () => {
+    const failed = createSession('channel', {
+      onStart: async () => {
+        throw new Error(
+          'page.goto: Timeout 30000ms exceeded.\nCall log:\n  - navigating to "https://www.twitch.tv/channel", waiting until "load"',
+        );
+      },
+    });
+    const healthy = createSession('channel');
+    const factory = createFactory((_channel, creationIndex) =>
+      creationIndex === 0 ? failed : healthy,
+    );
+    const logger = createLogger();
+    const sleeps: number[] = [];
+    const manager = new DefaultSessionManager(factory, {
+      logger,
+      startRetryAttempts: 1,
+      startRetryDelayMs: 2_000,
+      sleep: async (milliseconds) => {
+        sleeps.push(milliseconds);
+      },
+    });
+
+    await manager.reconcile(['channel']);
+
+    expect(manager.getActiveChannels()).toEqual(['channel']);
+    expect(factory.create).toHaveBeenCalledTimes(2);
+    expect(failed.stop).toHaveBeenCalledWith('start_failed');
+    expect(healthy.start).toHaveBeenCalledOnce();
+    expect(sleeps).toEqual([2_000]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'session_start_retry_scheduled',
+      expect.objectContaining({
+        channel: 'channel',
+        attempt: 1,
+        retryInMs: 2_000,
+      }),
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   it('新增多個 session 時會在後續啟動前套用間隔', async () => {
     const events: string[] = [];
     const factory = createFactory((channel) =>

@@ -460,6 +460,7 @@ function isRetriableSessionStartError(message: string): boolean {
     /browser(?: manager)? (?:has been )?closed/iu.test(message) ||
     /context .*closed/iu.test(message) ||
     /page .*closed/iu.test(message) ||
+    /page\.goto: Timeout \d+ms exceeded/iu.test(message) ||
     /Browser Manager 尚未啟動/iu.test(message);
 }
 

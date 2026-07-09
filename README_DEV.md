@@ -116,8 +116,8 @@ Reward claim recovery events:
 Session 啟動相關事件：
 Session startup events:
 
-- `session_start_retry_scheduled`：啟動 session 時遇到瀏覽器或 page 剛關閉，會短暫等待後重試一次。
-  A session start hit a just-closed browser or page, so the manager waits briefly and retries once.
+- `session_start_retry_scheduled`：啟動 session 時遇到瀏覽器/page 剛關閉或 Twitch 頁面導覽逾時，會短暫等待後重試一次。
+  A session start hit a just-closed browser/page or Twitch page navigation timeout, so the manager waits briefly and retries once.
 - `session_start_failed`：session 啟動最終失敗；該頻道不會留在 active registry，其他頻道會繼續處理。
   Session startup ultimately failed; that channel is not kept in the active registry, and other channels continue processing.
 

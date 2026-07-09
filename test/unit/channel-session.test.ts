@@ -266,7 +266,9 @@ describe('DefaultChannelSession', () => {
     expect(mockPage.setDefaultNavigationTimeout).toHaveBeenCalledWith(
       12_345,
     );
-    expect(mockPage.goto).toHaveBeenCalledWith(TARGET_URL);
+    expect(mockPage.goto).toHaveBeenCalledWith(TARGET_URL, {
+      waitUntil: 'domcontentloaded',
+    });
     expect(session.state).toBe('watching');
 
     await session.stop('test_complete');
