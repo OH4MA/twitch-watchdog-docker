@@ -96,27 +96,54 @@ twitch_api:
 
 ## 匯出 Twitch 登入狀態
 
-先安裝本機依賴與 Firefox：
+本專案不會自動登入，也不會開啟你的日常瀏覽器 profile。建議在本機桌面環境用登入輔助工具：
+
+1. 偵測系統預設瀏覽器  
+2. 用**臨時 profile** 以一般 OS 程序開啟（登入階段**不開** remote debugging / Playwright 旗標）  
+3. 你手動登入成功後在終端機按 Enter  
+4. 工具再用**同一個臨時 profile** 短暫重開並經 CDP 匯出 Playwright `storageState`
+
+Export Twitch login state on a local desktop machine. Login uses a normal OS browser process with an isolated temporary profile and no remote-debugging flags. After you press Enter, the same profile is relaunched briefly with CDP only to export Playwright `storageState`.
+
+先安裝本機依賴：
 
 ```bash
 npm ci
-npx playwright install firefox
 mkdir -p data/browser-state
 chmod 700 data data/browser-state
 ```
 
-開啟一次性瀏覽器並儲存登入狀態：
+若系統沒有 Chrome / Edge，可另外安裝 Playwright Firefox 作為後備：
+
+```bash
+npx playwright install firefox
+```
+
+執行登入輔助工具：
+
+```bash
+npm run twitch:login
+```
+
+在開啟的瀏覽器視窗中手動登入 Twitch（含 2FA）。工具偵測到 `auth-token` 後會自動寫入 `data/browser-state/storage-state.json` 並設定權限；你也可以在終端機按 Enter 立即存檔。
+
+瀏覽器優先順序：
+
+1. 系統預設瀏覽器（若 Playwright 可驅動，例如 Chrome / Edge / Firefox）
+2. Google Chrome
+3. Microsoft Edge
+4. 系統 Firefox（若找得到）
+5. Playwright Firefox
+
+Safari 不能由 Playwright 驅動；若預設是 Safari，會自動改用上述後備瀏覽器。可用 `--browser chrome|msedge|firefox` 強制指定。
+
+進階備援（不建議作為預設流程）：
 
 ```bash
 npx playwright codegen \
+  --browser=firefox \
   --save-storage=data/browser-state/storage-state.json \
   https://www.twitch.tv/
-```
-
-在開啟的瀏覽器中手動登入 Twitch，確認登入完成後關閉視窗，然後限制檔案權限：
-
-```bash
-chmod 600 data/browser-state/storage-state.json
 ```
 
 `storage-state.json` 等同 Twitch 登入憑證。不要提交 Git、放入 Docker image、上傳到 issue 或分享給他人。若懷疑外洩，請立即在 Twitch 登出所有裝置或撤銷 session，然後重新匯出。

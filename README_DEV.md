@@ -17,6 +17,8 @@
 - `src/app`：composition root、啟停順序、signal handler 與 runtime resource snapshot。
 - `test`：unit、integration、Playwright mock page E2E、Docker smoke 輔助檔。
 - `scripts`：維護與觀察用腳本。
+  - `scripts/twitch-login.mjs`：本機互動式 Twitch 登入輔助（偵測預設瀏覽器、臨時 profile、匯出 storageState）。
+  - `scripts/lib/default-browser.mjs`：預設瀏覽器偵測與偏好順序 helper。
 
 `doc/` 內的需求、設計、任務與交接文件是開發用途文件，不是使用者操作手冊。
 
@@ -37,6 +39,7 @@ npx playwright install firefox
 ## 常用命令
 
 ```bash
+npm run twitch:login
 npm run lint
 npm run build
 npm test

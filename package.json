@@ -17,6 +17,7 @@
     "test:unit": "vitest run test/unit --passWithNoTests",
     "test:integration": "vitest run test/integration --passWithNoTests",
     "test:e2e": "playwright test --pass-with-no-tests",
+    "twitch:login": "node scripts/twitch-login.mjs",
     "benchmark:csv": "node scripts/resource-snapshots-to-csv.mjs"
   },
   "dependencies": {
