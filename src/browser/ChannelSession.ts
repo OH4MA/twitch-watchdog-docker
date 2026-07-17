@@ -637,20 +637,18 @@ export class DefaultChannelSession implements ChannelSession {
       consecutiveFailures: this.consecutiveRewardFailures,
       requestedAt: this.now().toISOString(),
     };
-    safeLog(
-      this.logger,
-      'error',
-      LOG_EVENTS.CONTAINER_RESTART_REQUESTED,
-      {
+    // Canonical container_restart_requested is emitted once by
+    // ContainerRestartController; session only escalates via observer.
+
+    const observer = this.onContainerRestartRequested;
+    if (observer === undefined) {
+      safeLog(this.logger, 'error', LOG_EVENTS.CONTAINER_RESTART_REQUESTED, {
         channel: request.channel,
         reason: request.reason,
         consecutiveFailures: request.consecutiveFailures,
         requestedAt: request.requestedAt,
-      },
-    );
-
-    const observer = this.onContainerRestartRequested;
-    if (observer === undefined) {
+        source: 'channel_session_reward_no_observer',
+      });
       return;
     }
 

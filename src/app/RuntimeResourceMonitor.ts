@@ -7,6 +7,7 @@ import {
   CgroupV2Reader,
   type CgroupSnapshot,
 } from './CgroupV2Reader.js';
+import type { ContainerRestartRequest } from './ContainerRestartController.js';
 import {
   ResourceGuardPolicy,
   type ResourceGuardDecision,
@@ -17,11 +18,7 @@ import {
   type ResourceGuardPolicyConfig,
 } from '../config/resourceGuardThresholds.js';
 
-export interface ContainerRestartRequest {
-  readonly reason: string;
-  readonly source: string;
-  readonly fields?: Readonly<Record<string, unknown>>;
-}
+export type { ContainerRestartRequest } from './ContainerRestartController.js';
 
 export interface RuntimeResourceMonitorOptions {
   readonly browserManager: Pick<BrowserManager, 'getPageCount' | 'restart'>;

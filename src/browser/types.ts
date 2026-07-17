@@ -55,6 +55,22 @@ export interface BrowserAdapter {
   newContext(options: BrowserContextOptions): Promise<BrowserContextAdapter>;
   close(): Promise<void>;
   onDisconnected(listener: () => void): () => void;
+  /** Whether the Playwright connection to the browser process is still alive. */
+  isConnected(): boolean;
+}
+
+/** Result of a timed resource close attempt. Timeout is never success. */
+export type CloseOutcome =
+  | { readonly status: 'closed' }
+  | { readonly status: 'already_closed' }
+  | { readonly status: 'failed'; readonly error: unknown }
+  | { readonly status: 'timed_out' };
+
+export interface BrowserTeardownResult {
+  readonly browserTerminated: boolean;
+  readonly pageCloseTimedOut: boolean;
+  readonly browserCloseTimedOut: boolean;
+  readonly browserCloseFailed: boolean;
 }
 
 export interface BrowserLauncher {
@@ -90,10 +106,17 @@ export type BrowserManagerLogger = Pick<
   'debug' | 'info' | 'warn' | 'error'
 >;
 
+export type BrowserFatalRecoveryObserver = (request: {
+  readonly reason: string;
+  readonly fields?: Readonly<Record<string, unknown>>;
+}) => Promise<void> | void;
+
 export interface BrowserManagerDependencies {
   readonly launcher?: BrowserLauncher;
   readonly logger?: BrowserManagerLogger;
   readonly onInvalidated?: BrowserInvalidationObserver;
+  /** Called when browser recovery is exhausted or termination cannot be proved. */
+  readonly onFatalRecovery?: BrowserFatalRecoveryObserver;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly now?: () => number;
   readonly resourceCloseTimeoutMs?: number;
@@ -101,6 +124,15 @@ export interface BrowserManagerDependencies {
   readonly restartBackoffMaxMs?: number;
   readonly maxAutomaticRestartAttempts?: number;
   readonly restartAttemptResetMs?: number;
+  /** Channel page crashes in this window that trigger a browser recycle. */
+  readonly channelCrashRecycleThreshold?: number;
+  readonly channelCrashWindowMs?: number;
+  /** Global page crashes in this window that trigger a browser recycle. */
+  readonly globalPageCrashRecycleThreshold?: number;
+  readonly globalPageCrashWindowMs?: number;
+  /** Unexpected browser failures/recycles that escalate to container restart. */
+  readonly browserFailureContainerThreshold?: number;
+  readonly browserFailureWindowMs?: number;
 }
 
 export interface PageEntry {

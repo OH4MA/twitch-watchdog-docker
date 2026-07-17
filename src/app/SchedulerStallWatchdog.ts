@@ -1,6 +1,7 @@
 import type { Logger } from '../logging/index.js';
 import type { WatchdogScheduler } from '../scheduler/index.js';
 import type { ApplicationIntegration } from './AppRunner.js';
+import type { ContainerRestartController } from './ContainerRestartController.js';
 
 export interface SchedulerStallWatchdogOptions {
   readonly scheduler: Pick<WatchdogScheduler, 'getSnapshot'>;
@@ -8,6 +9,12 @@ export interface SchedulerStallWatchdogOptions {
   readonly intervalSeconds: number;
   readonly stallThresholdMs: number;
   readonly now?: () => number;
+  /** Preferred: shared fatal-exit controller. */
+  readonly containerRestartController?: Pick<
+    ContainerRestartController,
+    'request'
+  >;
+  /** Legacy test seam; used only when containerRestartController is omitted. */
   readonly exit?: (code: number) => void;
 }
 
@@ -97,6 +104,20 @@ export class SchedulerStallWatchdog implements ApplicationIntegration {
       retryAt: snapshot.retryAt,
     });
 
+    const controller = this.options.containerRestartController;
+    if (controller !== undefined) {
+      void controller.request({
+        reason: 'scheduler_stall',
+        source: 'scheduler_stall_watchdog',
+        fields: {
+          inFlightDurationMs,
+          stallThresholdMs: this.options.stallThresholdMs,
+        },
+      });
+      return;
+    }
+
+    // Legacy path for unit tests that inject exit without a controller.
     void this.options.logger.flush()
       .catch(() => undefined)
       .finally(() => {

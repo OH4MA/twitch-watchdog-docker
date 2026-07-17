@@ -7,13 +7,13 @@ afterEach(() => {
 });
 
 describe('SchedulerStallWatchdog', () => {
-  it('checkInFlight 持續超過門檻時 flush log 並要求 process exit', async () => {
+  it('checkInFlight 持續超過門檻時透過 ContainerRestartController 要求重啟', async () => {
     vi.useFakeTimers();
     let now = 0;
     let checkInFlight = true;
     const error = vi.fn();
     const flush = vi.fn(async () => undefined);
-    const exit = vi.fn();
+    const request = vi.fn(async () => undefined);
     const watchdog = new SchedulerStallWatchdog({
       scheduler: {
         getSnapshot: () => ({
@@ -31,18 +31,25 @@ describe('SchedulerStallWatchdog', () => {
       intervalSeconds: 10,
       stallThresholdMs: 30_000,
       now: () => now,
-      exit,
+      containerRestartController: { request },
     });
 
     await watchdog.start();
     now = 20_000;
     vi.advanceTimersByTime(10_000);
-    expect(exit).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
 
     now = 30_000;
     vi.advanceTimersByTime(10_000);
     await vi.waitFor(() => {
-      expect(exit).toHaveBeenCalledWith(1);
+      expect(request).toHaveBeenCalledWith({
+        reason: 'scheduler_stall',
+        source: 'scheduler_stall_watchdog',
+        fields: {
+          inFlightDurationMs: 30_000,
+          stallThresholdMs: 30_000,
+        },
+      });
     });
 
     expect(error).toHaveBeenCalledWith('scheduler_stall_detected', {
@@ -52,7 +59,6 @@ describe('SchedulerStallWatchdog', () => {
       lastCheckedAt: '2026-06-14T00:00:00.000Z',
       retryAt: undefined,
     });
-    expect(flush).toHaveBeenCalledOnce();
 
     checkInFlight = false;
     await watchdog.stop();

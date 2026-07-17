@@ -184,6 +184,7 @@ class TestContextAdapter implements BrowserContextAdapter {
 
 class TestBrowserAdapter implements BrowserAdapter {
   public closeCalls = 0;
+  private connected = true;
   private readonly disconnectListeners = new Set<() => void>();
 
   public constructor(private readonly context: BrowserContextAdapter) {}
@@ -194,6 +195,11 @@ class TestBrowserAdapter implements BrowserAdapter {
 
   public async close(): Promise<void> {
     this.closeCalls += 1;
+    this.connected = false;
+  }
+
+  public isConnected(): boolean {
+    return this.connected;
   }
 
   public onDisconnected(listener: () => void): () => void {

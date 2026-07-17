@@ -21,6 +21,10 @@ export class PlaywrightBrowserAdapter implements BrowserAdapter {
     await this.browser.close();
   }
 
+  public isConnected(): boolean {
+    return this.browser.isConnected();
+  }
+
   public onDisconnected(listener: () => void): () => void {
     this.browser.on('disconnected', listener);
     return () => {

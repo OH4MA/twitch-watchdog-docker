@@ -713,14 +713,11 @@ describe('DefaultChannelSession', () => {
       consecutiveFailures: REWARD_FAILURE_RECOVERY_THRESHOLD,
       requestedAt: NOW.toISOString(),
     });
-    expect(logs.error).toHaveBeenCalledWith(
+    // Canonical container_restart_requested is emitted by ContainerRestartController
+    // (observer), not by the session itself when an observer is wired.
+    expect(logs.error).not.toHaveBeenCalledWith(
       LOG_EVENTS.CONTAINER_RESTART_REQUESTED,
-      {
-        channel: CHANNEL,
-        reason: 'reward_claim_failure_after_refresh',
-        consecutiveFailures: REWARD_FAILURE_RECOVERY_THRESHOLD,
-        requestedAt: NOW.toISOString(),
-      },
+      expect.anything(),
     );
 
     await session.stop('test_complete');

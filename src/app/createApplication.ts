@@ -44,6 +44,7 @@ import {
   type ApplicationIntegration,
   type RuntimeFactory,
 } from './AppRunner.js';
+import { ContainerRestartController } from './ContainerRestartController.js';
 import { RuntimeResourceMonitor } from './RuntimeResourceMonitor.js';
 import { SchedulerStallWatchdog } from './SchedulerStallWatchdog.js';
 
@@ -111,6 +112,10 @@ export function createDefaultRuntime(
     );
   };
 
+  const containerRestartController = new ContainerRestartController({
+    logger,
+  });
+
   const browserManager = new DefaultBrowserManager(config, {
     logger,
     onInvalidated: (invalidation) =>
@@ -118,6 +123,12 @@ export function createDefaultRuntime(
         invalidation.channel,
         invalidation.reason,
       ),
+    onFatalRecovery: (request) =>
+      containerRestartController.request({
+        reason: request.reason,
+        source: 'browser_manager',
+        ...(request.fields === undefined ? {} : { fields: request.fields }),
+      }),
   });
   const rewardClaimer = new RewardClaimer({
     logger,
@@ -137,10 +148,16 @@ export function createDefaultRuntime(
       sessionManagerReference.current?.invalidate(channel, reason),
     onPageRefresh: (event) =>
       notify((bot) => bot.notifyPageRefresh(event)),
-    onContainerRestartRequested: async () => {
-      await logger.flush();
-      process.exit(1);
-    },
+    onContainerRestartRequested: (request) =>
+      containerRestartController.request({
+        reason: request.reason,
+        source: 'channel_session_reward',
+        fields: {
+          channel: request.channel,
+          consecutiveFailures: request.consecutiveFailures,
+          requestedAt: request.requestedAt,
+        },
+      }),
   });
 
   const sessionManager = new DefaultSessionManager(sessionFactory, {
@@ -204,15 +221,8 @@ export function createDefaultRuntime(
       intervalSeconds:
         config.browser.resourceTelemetryIntervalSeconds,
       resourceGuard: config.browser.resourceGuard,
-      onContainerRestartRequested: async (request) => {
-        logger.error('container_restart_requested', {
-          reason: request.reason,
-          source: request.source,
-          ...(request.fields ?? {}),
-        });
-        await logger.flush();
-        process.exit(1);
-      },
+      onContainerRestartRequested: (request) =>
+        containerRestartController.request(request),
     }),
     new SchedulerStallWatchdog({
       scheduler,
@@ -222,6 +232,7 @@ export function createDefaultRuntime(
         600_000,
         config.checkIntervalSeconds * 5_000,
       ),
+      containerRestartController,
     }),
     ...(config.telegram.enabled
       ? [

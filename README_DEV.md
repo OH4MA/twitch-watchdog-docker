@@ -195,6 +195,14 @@ When sharing logs for debugging, include `scheduler_tick_*`, `session_*`, `brows
 - Swap / OOM event / fast-growth rules do not scale with N.
 - Changing `max_concurrent_streams` at runtime via bot does not recompute resource-guard thresholds until process restart (Phase B limitation).
 
+### Container restart and browser cleanup (Phase C/D)
+
+- `ContainerRestartController` is the single-flight fatal exit path (`container_restart_requested` once, flush ≤5s, `exit(1)`).
+- Sources: resource guard, scheduler stall, reward escalation, browser fatal recovery.
+- Browser close timeout is **not** success. Page close hang schedules a full browser recycle asynchronously (no same-context page replace; avoids SessionManager/BrowserManager lock cycles).
+- Replacement Firefox launches only after `isConnected() === false` on the old browser; otherwise container restart.
+- Automatic restart exhaustion and crash-loop windows escalate to container restart.
+
 ## 維護原則
 
 - 不要重新加入 Twitch Drops 自動領取或舊 GraphQL claim 流程。

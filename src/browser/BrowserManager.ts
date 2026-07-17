@@ -8,6 +8,7 @@ import { PlaywrightBrowserLauncher } from './adapters/PlaywrightBrowserLauncher.
 import type {
   BrowserAdapter,
   BrowserContextAdapter,
+  BrowserFatalRecoveryObserver,
   BrowserInvalidation,
   BrowserInvalidationObserver,
   BrowserInvalidationReason,
@@ -17,6 +18,8 @@ import type {
   BrowserManagerDependencies,
   BrowserManagerLogger,
   BrowserPageAdapter,
+  BrowserTeardownResult,
+  CloseOutcome,
   DetachedResources,
   PageEntry,
   RestartSchedule,
@@ -27,6 +30,7 @@ export type {
   BrowserAdapter,
   BrowserContextAdapter,
   BrowserContextOptions,
+  BrowserFatalRecoveryObserver,
   BrowserInvalidation,
   BrowserInvalidationObserver,
   BrowserInvalidationReason,
@@ -37,6 +41,8 @@ export type {
   BrowserManagerDependencies,
   BrowserManagerLogger,
   BrowserPageAdapter,
+  BrowserTeardownResult,
+  CloseOutcome,
   ResourceBlockingOptions,
 } from './types.js';
 
@@ -45,6 +51,19 @@ const DEFAULT_RESTART_BACKOFF_MAX_MS = 30_000;
 const DEFAULT_MAX_AUTOMATIC_RESTART_ATTEMPTS = 3;
 const DEFAULT_RESTART_ATTEMPT_RESET_MS = 60_000;
 const DEFAULT_RESOURCE_CLOSE_TIMEOUT_MS = 10_000;
+const DEFAULT_CHANNEL_CRASH_RECYCLE_THRESHOLD = 2;
+const DEFAULT_CHANNEL_CRASH_WINDOW_MS = 5 * 60_000;
+const DEFAULT_GLOBAL_PAGE_CRASH_RECYCLE_THRESHOLD = 3;
+const DEFAULT_GLOBAL_PAGE_CRASH_WINDOW_MS = 10 * 60_000;
+const DEFAULT_BROWSER_FAILURE_CONTAINER_THRESHOLD = 3;
+const DEFAULT_BROWSER_FAILURE_WINDOW_MS = 10 * 60_000;
+
+export class BrowserTerminationError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = 'BrowserTerminationError';
+  }
+}
 
 const NOOP_LOGGER: BrowserManagerLogger = {
   debug(): void {},
@@ -57,6 +76,7 @@ export class DefaultBrowserManager implements BrowserManager {
   private readonly launcher: BrowserLauncher;
   private readonly logger: BrowserManagerLogger;
   private readonly onInvalidated: BrowserInvalidationObserver | undefined;
+  private readonly onFatalRecovery: BrowserFatalRecoveryObserver | undefined;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
   private readonly restartBackoffMs: number;
@@ -64,6 +84,12 @@ export class DefaultBrowserManager implements BrowserManager {
   private readonly maxAutomaticRestartAttempts: number;
   private readonly restartAttemptResetMs: number;
   private readonly resourceCloseTimeoutMs: number;
+  private readonly channelCrashRecycleThreshold: number;
+  private readonly channelCrashWindowMs: number;
+  private readonly globalPageCrashRecycleThreshold: number;
+  private readonly globalPageCrashWindowMs: number;
+  private readonly browserFailureContainerThreshold: number;
+  private readonly browserFailureWindowMs: number;
 
   private browser: BrowserAdapter | undefined;
   private context: BrowserContextAdapter | undefined;
@@ -78,6 +104,10 @@ export class DefaultBrowserManager implements BrowserManager {
   private recoveryEpoch = 0;
   private automaticRestartAttempts = 0;
   private lastBrowserCrashAt: number | undefined;
+  private pendingForcedRecycleReason: string | undefined;
+  private readonly channelCrashTimestamps = new Map<string, number[]>();
+  private globalPageCrashTimestamps: number[] = [];
+  private browserFailureTimestamps: number[] = [];
 
   public constructor(
     private readonly config: BrowserManagerConfig,
@@ -86,6 +116,7 @@ export class DefaultBrowserManager implements BrowserManager {
     this.launcher = dependencies.launcher ?? new PlaywrightBrowserLauncher();
     this.logger = dependencies.logger ?? NOOP_LOGGER;
     this.onInvalidated = dependencies.onInvalidated;
+    this.onFatalRecovery = dependencies.onFatalRecovery;
     this.sleep =
       dependencies.sleep ??
       ((milliseconds) =>
@@ -112,6 +143,30 @@ export class DefaultBrowserManager implements BrowserManager {
     this.resourceCloseTimeoutMs = positiveInteger(
       dependencies.resourceCloseTimeoutMs,
       DEFAULT_RESOURCE_CLOSE_TIMEOUT_MS,
+    );
+    this.channelCrashRecycleThreshold = positiveInteger(
+      dependencies.channelCrashRecycleThreshold,
+      DEFAULT_CHANNEL_CRASH_RECYCLE_THRESHOLD,
+    );
+    this.channelCrashWindowMs = positiveInteger(
+      dependencies.channelCrashWindowMs,
+      DEFAULT_CHANNEL_CRASH_WINDOW_MS,
+    );
+    this.globalPageCrashRecycleThreshold = positiveInteger(
+      dependencies.globalPageCrashRecycleThreshold,
+      DEFAULT_GLOBAL_PAGE_CRASH_RECYCLE_THRESHOLD,
+    );
+    this.globalPageCrashWindowMs = positiveInteger(
+      dependencies.globalPageCrashWindowMs,
+      DEFAULT_GLOBAL_PAGE_CRASH_WINDOW_MS,
+    );
+    this.browserFailureContainerThreshold = positiveInteger(
+      dependencies.browserFailureContainerThreshold,
+      DEFAULT_BROWSER_FAILURE_CONTAINER_THRESHOLD,
+    );
+    this.browserFailureWindowMs = positiveInteger(
+      dependencies.browserFailureWindowMs,
+      DEFAULT_BROWSER_FAILURE_WINDOW_MS,
     );
   }
 
@@ -152,7 +207,19 @@ export class DefaultBrowserManager implements BrowserManager {
   }
 
   public async createPage(channel: string): Promise<Page> {
+    // Wait for any in-flight full recycle scheduled after a failed page close.
+    const pendingRestart = this.restartFlight;
+    if (pendingRestart !== undefined) {
+      await pendingRestart;
+    }
+
     return this.runExclusive(async () => {
+      if (this.pendingForcedRecycleReason !== undefined) {
+        throw new Error(
+          `Browser recycle required (${this.pendingForcedRecycleReason}); cannot create page`,
+        );
+      }
+
       const existing = this.pages.get(channel);
       if (existing !== undefined) {
         return existing.adapter.page;
@@ -184,6 +251,8 @@ export class DefaultBrowserManager implements BrowserManager {
   }
 
   public async closePage(channel: string): Promise<void> {
+    let scheduleRecycleReason: string | undefined;
+
     await this.runExclusive(async () => {
       const entry = this.pages.get(channel);
       if (entry === undefined) {
@@ -191,30 +260,53 @@ export class DefaultBrowserManager implements BrowserManager {
       }
 
       this.detachPageListeners(entry);
+      const outcome = await this.closePageAdapterWithTimeout(
+        entry.adapter,
+        channel,
+        'close',
+      );
 
-      try {
-        await this.closePageAdapterWithTimeout(
-          entry.adapter,
-          channel,
-          'close',
-        );
+      if (
+        outcome.status === 'closed' ||
+        outcome.status === 'already_closed' ||
+        entry.adapter.isClosed()
+      ) {
         if (this.pages.get(channel) === entry) {
           this.pages.delete(channel);
         }
-      } catch (error: unknown) {
-        if (entry.adapter.isClosed()) {
-          this.pages.delete(channel);
-        } else if (this.pages.get(channel) === entry) {
-          this.reattachPageListeners(channel, entry);
-        }
+        return;
+      }
 
-        this.logger.warn('browser_page_close_failed', {
-          channel,
+      // Timeout or failed close while page may still be alive: do not allow
+      // another page in the same shared context. Schedule a full browser recycle
+      // asynchronously after releasing the exclusive lock (avoids SessionManager
+      // / BrowserManager lock cycles).
+      if (this.pages.get(channel) === entry) {
+        this.pages.delete(channel);
+      }
+      scheduleRecycleReason =
+        outcome.status === 'timed_out'
+          ? 'page_close_timeout'
+          : 'page_close_failed';
+      this.pendingForcedRecycleReason = scheduleRecycleReason;
+      this.logger.warn('browser_page_close_requires_recycle', {
+        channel,
+        reason: scheduleRecycleReason,
+        phase: 'close',
+      });
+    });
+
+    if (scheduleRecycleReason !== undefined) {
+      void this.restart().catch((error: unknown) => {
+        this.logger.error('browser_page_close_recycle_failed', {
+          reason: scheduleRecycleReason,
           error: this.safeError(error),
         });
-        throw error;
-      }
-    });
+        this.requestFatalRecovery('browser_page_close_recycle_failed', {
+          reason: scheduleRecycleReason,
+        });
+      });
+    }
   }
 
   public restart(): Promise<void> {
@@ -246,6 +338,8 @@ export class DefaultBrowserManager implements BrowserManager {
 
   private async restartManually(): Promise<void> {
     const invalidatedChannels: string[] = [];
+    let terminationConfirmed = false;
+    let relaunchError: unknown;
 
     try {
       await this.runExclusive(async () => {
@@ -253,31 +347,60 @@ export class DefaultBrowserManager implements BrowserManager {
         this.recoveryEpoch += 1;
         this.automaticRestartAttempts = 0;
         this.lastBrowserCrashAt = undefined;
+        this.pendingForcedRecycleReason = undefined;
         invalidatedChannels.push(...this.pages.keys());
 
         const resources = this.detachResourcesUnlocked();
-        await this.closeResourcesUnlocked(resources, 'restart');
+        const teardown = await this.closeResourcesUnlocked(
+          resources,
+          'restart',
+        );
+        terminationConfirmed = teardown.browserTerminated;
+
+        if (!terminationConfirmed) {
+          this.logger.error('browser_termination_unconfirmed', {
+            mode: 'manual',
+            pageCloseTimedOut: teardown.pageCloseTimedOut,
+            browserCloseTimedOut: teardown.browserCloseTimedOut,
+            browserCloseFailed: teardown.browserCloseFailed,
+          });
+          return;
+        }
 
         try {
           await this.startUnlocked();
+          this.logger.warn(LOG_EVENTS.BROWSER_RESTARTED, {
+            mode: 'manual',
+            affectedChannelCount: invalidatedChannels.length,
+          });
         } catch (error: unknown) {
+          relaunchError = error;
           this.logger.error('browser_restart_failed', {
             mode: 'manual',
             error: this.safeError(error),
           });
-          throw error;
         }
-
-        this.logger.warn(LOG_EVENTS.BROWSER_RESTARTED, {
-          mode: 'manual',
-          affectedChannelCount: invalidatedChannels.length,
-        });
       });
     } finally {
       await this.notifyInvalidations(
         invalidatedChannels,
         'browser_restarted',
       );
+    }
+
+    if (!terminationConfirmed) {
+      this.requestFatalRecovery('browser_termination_unconfirmed', {
+        mode: 'manual',
+      });
+      throw new BrowserTerminationError(
+        'Old browser termination was not confirmed; replacement launch skipped',
+      );
+    }
+
+    if (relaunchError !== undefined) {
+      throw relaunchError instanceof Error
+        ? relaunchError
+        : new Error('Browser relaunch failed');
     }
   }
 
@@ -455,6 +578,9 @@ export class DefaultBrowserManager implements BrowserManager {
         reason,
         durationMs: Date.now() - startedAtMs,
       });
+      if (reason === 'page_crashed') {
+        this.recordPageCrash(channel);
+      }
     }
   }
 
@@ -463,6 +589,7 @@ export class DefaultBrowserManager implements BrowserManager {
   ): Promise<void> {
     let invalidatedChannels: string[] = [];
     let restartSchedule: RestartSchedule | undefined;
+    let escalateToContainer = false;
 
     try {
       await this.runExclusive(async () => {
@@ -481,7 +608,10 @@ export class DefaultBrowserManager implements BrowserManager {
         await this.closeResourcesUnlocked(resources, 'disconnect');
 
         if (this.desiredRunning && this.config.browser.restartOnCrash) {
-          restartSchedule = this.nextRestartSchedule(recoveryEpoch, true);
+          escalateToContainer = this.recordBrowserFailure();
+          if (!escalateToContainer) {
+            restartSchedule = this.nextRestartSchedule(recoveryEpoch, true);
+          }
         }
       });
     } catch (error: unknown) {
@@ -494,6 +624,15 @@ export class DefaultBrowserManager implements BrowserManager {
       invalidatedChannels,
       'browser_disconnected',
     );
+
+    if (escalateToContainer) {
+      this.requestFatalRecovery('browser_crash_loop', {
+        browserFailureWindowMs: this.browserFailureWindowMs,
+        browserFailureContainerThreshold:
+          this.browserFailureContainerThreshold,
+      });
+      return;
+    }
 
     if (restartSchedule !== undefined) {
       this.scheduleAutomaticRestart(restartSchedule);
@@ -520,6 +659,9 @@ export class DefaultBrowserManager implements BrowserManager {
       this.maxAutomaticRestartAttempts
     ) {
       this.logger.error('browser_restart_limit_reached', {
+        maxAttempts: this.maxAutomaticRestartAttempts,
+      });
+      this.requestFatalRecovery('automatic_restart_limit_reached', {
         maxAttempts: this.maxAutomaticRestartAttempts,
       });
       return undefined;
@@ -601,6 +743,8 @@ export class DefaultBrowserManager implements BrowserManager {
         if (retrySchedule !== undefined) {
           this.scheduleAutomaticRestart(retrySchedule);
         }
+        // When retrySchedule is undefined, nextRestartSchedule already
+        // requested a container restart for attempt exhaustion.
         return;
       }
 
@@ -634,13 +778,18 @@ export class DefaultBrowserManager implements BrowserManager {
   private async closeResourcesUnlocked(
     resources: DetachedResources,
     phase: string,
-  ): Promise<void> {
+  ): Promise<BrowserTeardownResult> {
+    let pageCloseTimedOut = false;
+
     for (const entry of resources.pages) {
-      await this.closePageAdapterForCleanup(
+      const pageOutcome = await this.closePageAdapterForCleanup(
         entry.adapter,
         undefined,
         phase,
       );
+      if (pageOutcome.status === 'timed_out') {
+        pageCloseTimedOut = true;
+      }
     }
 
     await this.closeResourceForCleanup(
@@ -648,62 +797,102 @@ export class DefaultBrowserManager implements BrowserManager {
       'browser_context_close_failed',
       phase,
     );
-    await this.closeResourceForCleanup(
-      resources.browser,
-      'browser_close_failed',
-      phase,
-    );
+
+    let browserCloseTimedOut = false;
+    let browserCloseFailed = false;
+    const browser = resources.browser;
+    if (browser !== undefined) {
+      // Already disconnected: cleanup errors on wrappers are non-fatal.
+      if (!browser.isConnected()) {
+        await this.closeResourceForCleanup(
+          browser,
+          'browser_close_failed',
+          phase,
+        );
+        return {
+          browserTerminated: true,
+          pageCloseTimedOut,
+          browserCloseTimedOut: false,
+          browserCloseFailed: false,
+        };
+      }
+
+      const browserOutcome = await this.closeResourceForCleanup(
+        browser,
+        'browser_close_failed',
+        phase,
+      );
+      browserCloseTimedOut = browserOutcome.status === 'timed_out';
+      browserCloseFailed = browserOutcome.status === 'failed';
+    }
+
+    const browserTerminated =
+      browser === undefined || !browser.isConnected();
+
+    return {
+      browserTerminated,
+      pageCloseTimedOut,
+      browserCloseTimedOut,
+      browserCloseFailed,
+    };
   }
 
   private async closePageAdapterForCleanup(
     adapter: BrowserPageAdapter,
     channel: string | undefined,
     phase: string,
-  ): Promise<void> {
+  ): Promise<CloseOutcome> {
     if (adapter.isClosed()) {
-      return;
+      return { status: 'already_closed' };
     }
 
-    try {
-      await this.closePageAdapterWithTimeout(adapter, channel, phase);
-    } catch (error: unknown) {
+    const outcome = await this.closePageAdapterWithTimeout(
+      adapter,
+      channel,
+      phase,
+    );
+    if (outcome.status === 'failed') {
       this.logger.warn('browser_page_cleanup_failed', {
         ...(channel === undefined ? {} : { channel }),
         phase,
-        error: this.safeError(error),
+        error: this.safeError(outcome.error),
       });
     }
+    return outcome;
   }
 
   private async closeResourceForCleanup(
     resource: { close(): Promise<void> } | undefined,
     event: string,
     phase: string,
-  ): Promise<void> {
+  ): Promise<CloseOutcome> {
     if (resource === undefined) {
-      return;
+      return { status: 'already_closed' };
     }
 
-    try {
-      await this.closeWithTimeout(
-        resource.close(),
-        event.replace('_failed', '_timeout'),
-        { phase },
-      );
-    } catch (error: unknown) {
+    const outcome = await this.closeWithTimeout(
+      resource.close(),
+      event.replace('_failed', '_timeout'),
+      { phase },
+    );
+    if (outcome.status === 'failed') {
       this.logger.warn(event, {
         phase,
-        error: this.safeError(error),
+        error: this.safeError(outcome.error),
       });
     }
+    return outcome;
   }
 
   private async closePageAdapterWithTimeout(
     adapter: BrowserPageAdapter,
     channel: string | undefined,
     phase: string,
-  ): Promise<void> {
-    await this.closeWithTimeout(
+  ): Promise<CloseOutcome> {
+    if (adapter.isClosed()) {
+      return { status: 'already_closed' };
+    }
+    return this.closeWithTimeout(
       adapter.close(),
       'browser_page_close_timeout',
       {
@@ -717,7 +906,7 @@ export class DefaultBrowserManager implements BrowserManager {
     closePromise: Promise<void>,
     timeoutEvent: string,
     fields: Readonly<Record<string, unknown>>,
-  ): Promise<void> {
+  ): Promise<CloseOutcome> {
     const startedAtMs = Date.now();
     this.logger.debug('browser_resource_close_started', {
       ...fields,
@@ -725,41 +914,165 @@ export class DefaultBrowserManager implements BrowserManager {
       timeoutMs: this.resourceCloseTimeoutMs,
     });
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    // Attach rejection handler so a late rejection after timeout is not unhandled.
     closePromise.catch(() => undefined);
 
-    const didTimeOut = await Promise.race([
-      closePromise.then(() => false),
-      new Promise<true>((resolve) => {
-        timeoutHandle = setTimeout(() => {
-          resolve(true);
-        }, this.resourceCloseTimeoutMs);
-      }),
-    ]);
+    try {
+      const raceResult = await Promise.race([
+        closePromise.then(
+          () => ({ kind: 'closed' as const }),
+          (error: unknown) => ({ kind: 'failed' as const, error }),
+        ),
+        new Promise<{ kind: 'timed_out' }>((resolve) => {
+          timeoutHandle = setTimeout(() => {
+            resolve({ kind: 'timed_out' });
+          }, this.resourceCloseTimeoutMs);
+        }),
+      ]);
 
-    if (timeoutHandle !== undefined) {
-      clearTimeout(timeoutHandle);
-    }
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
 
-    if (didTimeOut) {
-      this.logger.warn(timeoutEvent, {
-        ...fields,
-        timeoutMs: this.resourceCloseTimeoutMs,
-      });
+      if (raceResult.kind === 'timed_out') {
+        this.logger.warn(timeoutEvent, {
+          ...fields,
+          timeoutMs: this.resourceCloseTimeoutMs,
+        });
+        this.logger.debug('browser_resource_close_completed', {
+          ...fields,
+          timeoutEvent,
+          timedOut: true,
+          status: 'timed_out',
+          durationMs: Date.now() - startedAtMs,
+        });
+        return { status: 'timed_out' };
+      }
+
+      if (raceResult.kind === 'failed') {
+        this.logger.debug('browser_resource_close_completed', {
+          ...fields,
+          timeoutEvent,
+          timedOut: false,
+          status: 'failed',
+          durationMs: Date.now() - startedAtMs,
+        });
+        return { status: 'failed', error: raceResult.error };
+      }
+
       this.logger.debug('browser_resource_close_completed', {
         ...fields,
         timeoutEvent,
-        timedOut: true,
+        timedOut: false,
+        status: 'closed',
         durationMs: Date.now() - startedAtMs,
+      });
+      return { status: 'closed' };
+    } catch (error: unknown) {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
+      return { status: 'failed', error };
+    }
+  }
+
+  private recordPageCrash(channel: string): void {
+    const nowMs = this.now();
+    const channelTimes = evictOldTimestamps(
+      this.channelCrashTimestamps.get(channel) ?? [],
+      nowMs,
+      this.channelCrashWindowMs,
+    );
+    channelTimes.push(nowMs);
+    this.channelCrashTimestamps.set(channel, channelTimes);
+
+    this.globalPageCrashTimestamps = evictOldTimestamps(
+      this.globalPageCrashTimestamps,
+      nowMs,
+      this.globalPageCrashWindowMs,
+    );
+    this.globalPageCrashTimestamps.push(nowMs);
+
+    const channelNeedsRecycle =
+      channelTimes.length >= this.channelCrashRecycleThreshold;
+    const globalNeedsRecycle =
+      this.globalPageCrashTimestamps.length >=
+      this.globalPageCrashRecycleThreshold;
+
+    if (!channelNeedsRecycle && !globalNeedsRecycle) {
+      return;
+    }
+
+    const reason = channelNeedsRecycle
+      ? 'channel_page_crash_loop'
+      : 'global_page_crash_loop';
+    this.logger.warn('browser_crash_loop_recycle_requested', {
+      reason,
+      channel,
+      channelCrashCount: channelTimes.length,
+      globalPageCrashCount: this.globalPageCrashTimestamps.length,
+    });
+
+    // Count crash-driven full recycle toward browser failure breaker.
+    if (this.recordBrowserFailure()) {
+      this.requestFatalRecovery('browser_crash_loop', {
+        reason,
+        channel,
       });
       return;
     }
 
-    this.logger.debug('browser_resource_close_completed', {
-      ...fields,
-      timeoutEvent,
-      timedOut: false,
-      durationMs: Date.now() - startedAtMs,
+    void this.restart().catch((error: unknown) => {
+      this.logger.error('browser_crash_loop_recycle_failed', {
+        reason,
+        error: this.safeError(error),
+      });
+      this.requestFatalRecovery('browser_crash_loop_recycle_failed', {
+        reason,
+        channel,
+      });
     });
+  }
+
+  /**
+   * Record an unexpected browser failure. Returns true when container restart
+   * should be requested instead of another browser recycle.
+   */
+  private recordBrowserFailure(): boolean {
+    const nowMs = this.now();
+    this.browserFailureTimestamps = evictOldTimestamps(
+      this.browserFailureTimestamps,
+      nowMs,
+      this.browserFailureWindowMs,
+    );
+    this.browserFailureTimestamps.push(nowMs);
+    return (
+      this.browserFailureTimestamps.length >=
+      this.browserFailureContainerThreshold
+    );
+  }
+
+  private requestFatalRecovery(
+    reason: string,
+    fields?: Readonly<Record<string, unknown>>,
+  ): void {
+    const observer = this.onFatalRecovery;
+    if (observer === undefined) {
+      return;
+    }
+    void Promise.resolve()
+      .then(() =>
+        observer({
+          reason,
+          ...(fields === undefined ? {} : { fields }),
+        }),
+      )
+      .catch((error: unknown) => {
+        this.logger.error('browser_fatal_recovery_observer_failed', {
+          reason,
+          error: this.safeError(error),
+        });
+      });
   }
 
   private detachPageListeners(entry: PageEntry): void {
@@ -840,4 +1153,13 @@ function positiveInteger(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isInteger(value) && value > 0
     ? value
     : fallback;
+}
+
+function evictOldTimestamps(
+  timestamps: readonly number[],
+  nowMs: number,
+  windowMs: number,
+): number[] {
+  const cutoff = nowMs - windowMs;
+  return timestamps.filter((timestamp) => timestamp >= cutoff);
 }

@@ -178,20 +178,31 @@ class MockBrowserAdapter implements BrowserAdapter {
   );
 
   public readonly close = vi.fn(async (): Promise<void> => {
+    if (this.closeImplementation !== undefined) {
+      await this.closeImplementation();
+      return;
+    }
     const failure = this.closeFailures.shift();
     if (failure !== undefined) {
       throw failure;
     }
+    this.connected = false;
     this.emitDisconnected();
   });
 
   public readonly contextOptions: BrowserContextOptions[] = [];
+  public closeImplementation: (() => Promise<void>) | undefined;
+  private connected = true;
   private readonly disconnectedListeners = new Set<() => void>();
   private readonly closeFailures: Error[] = [];
 
   public constructor(
     private readonly contextResult: MockContextAdapter | Error,
   ) {}
+
+  public isConnected(): boolean {
+    return this.connected;
+  }
 
   public onDisconnected(listener: () => void): () => void {
     this.disconnectedListeners.add(listener);
@@ -201,6 +212,7 @@ class MockBrowserAdapter implements BrowserAdapter {
   }
 
   public emitDisconnected(): void {
+    this.connected = false;
     for (const listener of [...this.disconnectedListeners]) {
       listener();
     }
@@ -350,25 +362,37 @@ describe('DefaultBrowserManager', () => {
     expect(invalidations).toEqual([]);
   });
 
-  it('closePage 失敗時保留資源，stop 會再次清理', async () => {
+  it('closePage 失敗時改為 full browser recycle，不在同 context 偷偷換 page', async () => {
     const page = new MockPageAdapter('channel');
     page.failNextClose();
-    const context = new MockContextAdapter([page]);
-    const browser = new MockBrowserAdapter(context);
+    const firstContext = new MockContextAdapter([page]);
+    const firstBrowser = new MockBrowserAdapter(firstContext);
+    const secondContext = new MockContextAdapter();
+    const secondBrowser = new MockBrowserAdapter(secondContext);
+    const logger = createLogger();
     const manager = new DefaultBrowserManager(createConfig(), {
-      launcher: new MockLauncher([browser]),
+      launcher: new MockLauncher([firstBrowser, secondBrowser]),
+      logger,
     });
     await manager.start();
     await manager.createPage('channel');
 
-    await expect(manager.closePage('channel')).rejects.toThrow(
-      'page close failed',
+    await expect(manager.closePage('channel')).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'browser_page_close_requires_recycle',
+      expect.objectContaining({
+        channel: 'channel',
+        reason: 'page_close_failed',
+      }),
     );
-    await manager.stop();
 
-    expect(page.close).toHaveBeenCalledTimes(2);
-    expect(context.close).toHaveBeenCalledOnce();
-    expect(browser.close).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(firstBrowser.close).toHaveBeenCalled();
+    });
+    await vi.waitFor(() => {
+      expect(secondBrowser.newContext).toHaveBeenCalled();
+    });
+    expect(manager.getPageCount()).toBe(0);
   });
 
   it('stop 關閉 pages、context、browser，併發與重複 stop 皆安全', async () => {
@@ -770,12 +794,16 @@ describe('DefaultBrowserManager', () => {
       thirdBrowser,
     ]);
     const logger = createLogger();
+    const onFatalRecovery = vi.fn();
     const manager = new DefaultBrowserManager(createConfig(), {
       launcher,
       logger,
       sleep: async () => undefined,
       now: () => 1_000,
       maxAutomaticRestartAttempts: 2,
+      // Keep crash-loop breaker high so this test isolates launch-attempt limit.
+      browserFailureContainerThreshold: 10,
+      onFatalRecovery,
     });
     await manager.start();
 
@@ -795,6 +823,11 @@ describe('DefaultBrowserManager', () => {
         { maxAttempts: 2 },
       );
     });
+    expect(onFatalRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'automatic_restart_limit_reached',
+      }),
+    );
     expect(launcher.launch).toHaveBeenCalledTimes(3);
   });
 
@@ -829,17 +862,20 @@ describe('DefaultBrowserManager', () => {
     );
   });
 
-  it('page close 卡住時會 timeout 並允許後續重建', async () => {
+  it('page close 卡住時會 timeout 並排程 full browser recycle，不可同 context 重建', async () => {
     vi.useFakeTimers();
     const failedPage = new MockPageAdapter('failed');
     failedPage.closeImplementation = () =>
       new Promise<void>(() => undefined);
+    const firstContext = new MockContextAdapter([failedPage]);
+    const firstBrowser = new MockBrowserAdapter(firstContext);
     const replacementPage = new MockPageAdapter('replacement');
-    const context = new MockContextAdapter([failedPage, replacementPage]);
+    const secondContext = new MockContextAdapter([replacementPage]);
+    const secondBrowser = new MockBrowserAdapter(secondContext);
     const logger = createLogger();
     const invalidations: BrowserInvalidation[] = [];
     const manager = new DefaultBrowserManager(createConfig(), {
-      launcher: new MockLauncher([new MockBrowserAdapter(context)]),
+      launcher: new MockLauncher([firstBrowser, secondBrowser]),
       logger,
       onInvalidated: (invalidation) => {
         invalidations.push(invalidation);
@@ -861,12 +897,159 @@ describe('DefaultBrowserManager', () => {
         timeoutMs: 100,
       },
     );
+    expect(logger.warn).toHaveBeenCalledWith(
+      'browser_page_close_requires_recycle',
+      expect.objectContaining({
+        channel: 'channel',
+        reason: 'page_close_timeout',
+      }),
+    );
+
+    // Full recycle closes the old browser and launches a replacement.
+    await vi.waitFor(() => {
+      expect(firstBrowser.close).toHaveBeenCalled();
+    });
+    await vi.waitFor(() => {
+      expect(manager.getPageCount()).toBe(0);
+    });
+
+    // After recycle, a new page may be created on the new browser/context.
+    // The timed-out page was already removed before recycle, so restart may
+    // notify zero channels; createPage on the replacement browser is the signal.
     await expect(manager.createPage('channel')).resolves.toBe(
       replacementPage.page,
     );
-    expect(invalidations).toEqual([]);
+    expect(secondContext.newPage).toHaveBeenCalled();
+    expect(firstBrowser.close).toHaveBeenCalled();
 
     vi.useRealTimers();
+  });
+
+  it('browser close 無法確認終止時不 launch 替換 browser 並要求 fatal recovery', async () => {
+    vi.useFakeTimers();
+    const context = new MockContextAdapter([new MockPageAdapter('page')]);
+    const hungBrowser = new MockBrowserAdapter(context);
+    hungBrowser.closeImplementation = () =>
+      new Promise<void>(() => undefined);
+    const onFatalRecovery = vi.fn();
+    const logger = createLogger();
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher: new MockLauncher([hungBrowser]),
+      logger,
+      onFatalRecovery,
+      resourceCloseTimeoutMs: 50,
+    });
+    await manager.start();
+    await manager.createPage('channel');
+
+    const restartPromise = manager.restart();
+    await vi.advanceTimersByTimeAsync(50);
+    await expect(restartPromise).rejects.toThrow(/termination was not confirmed/i);
+
+    expect(onFatalRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'browser_termination_unconfirmed' }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      'browser_termination_unconfirmed',
+      expect.objectContaining({ mode: 'manual' }),
+    );
+
+    vi.useRealTimers();
+  });
+
+  it('自動重啟次數耗盡時要求 container restart', async () => {
+    vi.useFakeTimers();
+    const first = new MockBrowserAdapter(new MockContextAdapter());
+    const second = new MockBrowserAdapter(new MockContextAdapter());
+    const third = new MockBrowserAdapter(new MockContextAdapter());
+    const onFatalRecovery = vi.fn();
+    const logger = createLogger();
+    const launcher = new MockLauncher([first, second, third]);
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher,
+      logger,
+      onFatalRecovery,
+      maxAutomaticRestartAttempts: 2,
+      restartBackoffMs: 1,
+      restartBackoffMaxMs: 1,
+      restartAttemptResetMs: 60_000,
+      browserFailureContainerThreshold: 10,
+    });
+    await manager.start();
+
+    first.emitDisconnected();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => {
+      expect(launcher.launch).toHaveBeenCalledTimes(2);
+    });
+    second.emitDisconnected();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => {
+      expect(launcher.launch).toHaveBeenCalledTimes(3);
+    });
+    third.emitDisconnected();
+    await vi.advanceTimersByTimeAsync(1);
+
+    await vi.waitFor(() => {
+      expect(onFatalRecovery).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: 'automatic_restart_limit_reached',
+        }),
+      );
+    });
+    expect(logger.error).toHaveBeenCalledWith(
+      'browser_restart_limit_reached',
+      { maxAttempts: 2 },
+    );
+
+    vi.useRealTimers();
+  });
+
+  it('短時間多次 unexpected browser disconnect 會以 crash-loop 要求 container restart', async () => {
+    let clock = 0;
+    const firstBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const secondBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const thirdBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const onFatalRecovery = vi.fn();
+    const launcher = new MockLauncher([
+      firstBrowser,
+      secondBrowser,
+      thirdBrowser,
+    ]);
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher,
+      logger: createLogger(),
+      sleep: async () => undefined,
+      now: () => clock,
+      maxAutomaticRestartAttempts: 10,
+      browserFailureContainerThreshold: 3,
+      browserFailureWindowMs: 60_000,
+      onFatalRecovery,
+    });
+    await manager.start();
+    expect(launcher.launch).toHaveBeenCalledTimes(1);
+
+    clock = 1_000;
+    firstBrowser.emitDisconnected();
+    await vi.waitFor(() => {
+      expect(launcher.launch).toHaveBeenCalledTimes(2);
+    });
+
+    clock = 2_000;
+    secondBrowser.emitDisconnected();
+    await vi.waitFor(() => {
+      expect(launcher.launch).toHaveBeenCalledTimes(3);
+    });
+
+    clock = 3_000;
+    thirdBrowser.emitDisconnected();
+    await vi.waitFor(() => {
+      expect(onFatalRecovery).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'browser_crash_loop' }),
+      );
+    });
+    // Third disconnect escalates without another launch.
+    expect(launcher.launch).toHaveBeenCalledTimes(3);
   });
 
   it('createPage 進行中呼叫 stop 時會等待建立完成後再清理', async () => {

@@ -30,13 +30,17 @@ export {
   type CgroupV2ReaderOptions,
 } from './CgroupV2Reader.js';
 export {
+  ContainerRestartController,
+  type ContainerRestartControllerOptions,
+  type ContainerRestartRequest,
+} from './ContainerRestartController.js';
+export {
   ResourceGuardPolicy,
   type ResourceGuardDecision,
   type ResourceGuardPolicyOptions,
 } from './ResourceGuardPolicy.js';
 export {
   RuntimeResourceMonitor,
-  type ContainerRestartRequest,
   type RuntimeResourceMonitorOptions,
 } from './RuntimeResourceMonitor.js';
 export {
