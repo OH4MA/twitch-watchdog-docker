@@ -36,8 +36,8 @@ function createPolicy(now: () => number = () => 0): ResourceGuardPolicy {
       startupRateGraceSeconds: 120,
       browserRecycleConsecutiveSamples: 2,
       emergencySwapMib: 768,
-      fastGrowthMib: 512,
-      fastGrowthWindowSeconds: 10,
+      fastGrowthMib: 1_024,
+      fastGrowthWindowSeconds: 30,
       postRecycleObservationSeconds: 20,
       postRecycleMinimumDropMib: 512,
       effective: {
@@ -152,9 +152,9 @@ describe('ResourceGuardPolicy', () => {
 
     now = 120_000;
     policy.evaluate(snapshot({ atMs: 120_000, memoryMib: 1_000 }));
-    now = 130_000;
+    now = 150_000;
     expect(
-      policy.evaluate(snapshot({ atMs: 130_000, memoryMib: 1_600 })),
+      policy.evaluate(snapshot({ atMs: 150_000, memoryMib: 2_100 })),
     ).toEqual({
       action: 'restart_container',
       reason: 'fast_memory_growth',

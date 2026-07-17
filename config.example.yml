@@ -46,8 +46,8 @@ browser:
     browser_recycle_consecutive_samples: 2
     emergency_memory_mib: 5376
     emergency_swap_mib: 768
-    fast_growth_mib: 512
-    fast_growth_window_seconds: 10
+    fast_growth_mib: 1024
+    fast_growth_window_seconds: 30
     post_recycle_observation_seconds: 20
     post_recycle_target_memory_mib: 4096
     post_recycle_minimum_drop_mib: 512

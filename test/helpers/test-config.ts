@@ -52,8 +52,8 @@ export function createDefaultResourceGuard(
       overrides.browserRecycleConsecutiveSamples ?? 2,
     emergencyMemoryMib: anchors.emergencyMemoryMib,
     emergencySwapMib: overrides.emergencySwapMib ?? 768,
-    fastGrowthMib: overrides.fastGrowthMib ?? 512,
-    fastGrowthWindowSeconds: overrides.fastGrowthWindowSeconds ?? 10,
+    fastGrowthMib: overrides.fastGrowthMib ?? 1_024,
+    fastGrowthWindowSeconds: overrides.fastGrowthWindowSeconds ?? 30,
     postRecycleObservationSeconds:
       overrides.postRecycleObservationSeconds ?? 20,
     postRecycleTargetMemoryMib: anchors.postRecycleTargetMemoryMib,
