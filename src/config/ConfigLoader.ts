@@ -7,6 +7,7 @@ import {
   type BrowserConfig,
   type DiscordConfig,
   type LogLevel,
+  type ResourceGuardConfig,
   type StreamQuality,
   type TelegramConfig,
   type TwitchApiConfig,
@@ -16,6 +17,7 @@ import {
   ConfigParseError,
   ConfigValidationError,
 } from './errors.js';
+import { computeEffectiveResourceGuardThresholds } from './resourceGuardThresholds.js';
 import { parseYaml } from './yaml.js';
 
 const DEFAULT_CONFIG_PATH = '/app/config.yml';
@@ -26,12 +28,30 @@ const DEFAULT_STORAGE_STATE_PATH =
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
 const DEFAULT_PAGE_HEALTH_CHECK_INTERVAL_SECONDS = 60;
 const DEFAULT_REWARD_CHECK_INTERVAL_SECONDS = 30;
-const DEFAULT_PAGE_REFRESH_INTERVAL_SECONDS = 300;
+/** Disabled by default to reduce Firefox lifecycle churn and memory pressure. */
+const DEFAULT_PAGE_REFRESH_INTERVAL_SECONDS = 0;
 const DEFAULT_STREAM_QUALITY: StreamQuality = '160p';
 const DEFAULT_ENFORCE_STREAM_QUALITY_SECONDS = 120;
 const DEFAULT_VIEWPORT_WIDTH = 1280;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
-const DEFAULT_RESOURCE_TELEMETRY_INTERVAL_SECONDS = 300;
+/** Normal resource snapshot cadence; policy samples use resource_guard.sample_interval_seconds. */
+const DEFAULT_RESOURCE_TELEMETRY_INTERVAL_SECONDS = 60;
+const DEFAULT_RESOURCE_GUARD_SAMPLE_INTERVAL_SECONDS = 2;
+const DEFAULT_RESOURCE_GUARD_STARTUP_RATE_GRACE_SECONDS = 120;
+const DEFAULT_RESOURCE_GUARD_BASELINE_STREAMS = 3;
+const DEFAULT_RESOURCE_GUARD_BASE_MEMORY_MIB = 512;
+const DEFAULT_RESOURCE_GUARD_WARNING_MEMORY_MIB = 4_096;
+const DEFAULT_RESOURCE_GUARD_WARNING_RESET_MEMORY_MIB = 3_840;
+const DEFAULT_RESOURCE_GUARD_BROWSER_RECYCLE_MEMORY_MIB = 4_608;
+const DEFAULT_RESOURCE_GUARD_BROWSER_RECYCLE_CONSECUTIVE_SAMPLES = 2;
+const DEFAULT_RESOURCE_GUARD_EMERGENCY_MEMORY_MIB = 5_376;
+const DEFAULT_RESOURCE_GUARD_EMERGENCY_SWAP_MIB = 768;
+const DEFAULT_RESOURCE_GUARD_FAST_GROWTH_MIB = 512;
+const DEFAULT_RESOURCE_GUARD_FAST_GROWTH_WINDOW_SECONDS = 10;
+const DEFAULT_RESOURCE_GUARD_POST_RECYCLE_OBSERVATION_SECONDS = 20;
+const DEFAULT_RESOURCE_GUARD_POST_RECYCLE_TARGET_MEMORY_MIB = 4_096;
+const DEFAULT_RESOURCE_GUARD_POST_RECYCLE_MINIMUM_DROP_MIB = 512;
+const MAX_RESOURCE_GUARD_MEMORY_MIB = 1_048_576;
 const MINIMUM_VIEWPORT_WIDTH = 320;
 const MINIMUM_VIEWPORT_HEIGHT = 180;
 const DEFAULT_TELEGRAM_POLLING_TIMEOUT_SECONDS = 25;
@@ -129,7 +149,7 @@ function buildConfig(
     ),
     logLevel: resolveLogLevel(env.LOG_LEVEL, root.log_level),
     twitchApi: buildTwitchApi(root.twitch_api, env),
-    browser: buildBrowserConfig(root.browser),
+    browser: buildBrowserConfig(root.browser, maxConcurrentStreams),
     telegram: buildTelegramConfig(root.telegram, env),
     discord: buildDiscordConfig(root.discord, env),
   };
@@ -420,7 +440,10 @@ function buildTwitchApi(
   };
 }
 
-function buildBrowserConfig(value: unknown): BrowserConfig {
+function buildBrowserConfig(
+  value: unknown,
+  maxConcurrentStreams: number,
+): BrowserConfig {
   const browser = value === undefined ? {} : requireRecord(value, 'browser');
 
   return {
@@ -501,6 +524,201 @@ function buildBrowserConfig(value: unknown): BrowserConfig {
       DEFAULT_RESOURCE_TELEMETRY_INTERVAL_SECONDS,
       MAX_TIMER_DELAY_SECONDS,
     ),
+    resourceGuard: buildResourceGuardConfig(
+      browser.resource_guard,
+      maxConcurrentStreams,
+    ),
+  };
+}
+
+function buildResourceGuardConfig(
+  value: unknown,
+  maxConcurrentStreams: number,
+): ResourceGuardConfig {
+  const guard =
+    value === undefined
+      ? {}
+      : requireRecord(value, 'browser.resource_guard');
+
+  const sampleIntervalSeconds = optionalPositiveInteger(
+    guard.sample_interval_seconds,
+    'browser.resource_guard.sample_interval_seconds',
+    DEFAULT_RESOURCE_GUARD_SAMPLE_INTERVAL_SECONDS,
+    MAX_TIMER_DELAY_SECONDS,
+  );
+  const startupRateGraceSeconds = optionalIntegerAtLeast(
+    guard.startup_rate_grace_seconds,
+    'browser.resource_guard.startup_rate_grace_seconds',
+    DEFAULT_RESOURCE_GUARD_STARTUP_RATE_GRACE_SECONDS,
+    0,
+    MAX_TIMER_DELAY_SECONDS,
+  );
+  const scaleWithStreams = optionalBoolean(
+    guard.scale_with_streams,
+    'browser.resource_guard.scale_with_streams',
+    true,
+  );
+  const baselineStreams = optionalPositiveInteger(
+    guard.baseline_streams,
+    'browser.resource_guard.baseline_streams',
+    DEFAULT_RESOURCE_GUARD_BASELINE_STREAMS,
+    1_024,
+  );
+  const baseMemoryMib = optionalIntegerAtLeast(
+    guard.base_memory_mib,
+    'browser.resource_guard.base_memory_mib',
+    DEFAULT_RESOURCE_GUARD_BASE_MEMORY_MIB,
+    0,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const warningMemoryMib = optionalPositiveInteger(
+    guard.warning_memory_mib,
+    'browser.resource_guard.warning_memory_mib',
+    DEFAULT_RESOURCE_GUARD_WARNING_MEMORY_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const warningResetMemoryMib = optionalPositiveInteger(
+    guard.warning_reset_memory_mib,
+    'browser.resource_guard.warning_reset_memory_mib',
+    DEFAULT_RESOURCE_GUARD_WARNING_RESET_MEMORY_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const browserRecycleMemoryMib = optionalPositiveInteger(
+    guard.browser_recycle_memory_mib,
+    'browser.resource_guard.browser_recycle_memory_mib',
+    DEFAULT_RESOURCE_GUARD_BROWSER_RECYCLE_MEMORY_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const browserRecycleConsecutiveSamples = optionalPositiveInteger(
+    guard.browser_recycle_consecutive_samples,
+    'browser.resource_guard.browser_recycle_consecutive_samples',
+    DEFAULT_RESOURCE_GUARD_BROWSER_RECYCLE_CONSECUTIVE_SAMPLES,
+    1_000,
+  );
+  const emergencyMemoryMib = optionalPositiveInteger(
+    guard.emergency_memory_mib,
+    'browser.resource_guard.emergency_memory_mib',
+    DEFAULT_RESOURCE_GUARD_EMERGENCY_MEMORY_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const emergencySwapMib = optionalPositiveInteger(
+    guard.emergency_swap_mib,
+    'browser.resource_guard.emergency_swap_mib',
+    DEFAULT_RESOURCE_GUARD_EMERGENCY_SWAP_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const fastGrowthMib = optionalPositiveInteger(
+    guard.fast_growth_mib,
+    'browser.resource_guard.fast_growth_mib',
+    DEFAULT_RESOURCE_GUARD_FAST_GROWTH_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const fastGrowthWindowSeconds = optionalPositiveInteger(
+    guard.fast_growth_window_seconds,
+    'browser.resource_guard.fast_growth_window_seconds',
+    DEFAULT_RESOURCE_GUARD_FAST_GROWTH_WINDOW_SECONDS,
+    MAX_TIMER_DELAY_SECONDS,
+  );
+  const postRecycleObservationSeconds = optionalPositiveInteger(
+    guard.post_recycle_observation_seconds,
+    'browser.resource_guard.post_recycle_observation_seconds',
+    DEFAULT_RESOURCE_GUARD_POST_RECYCLE_OBSERVATION_SECONDS,
+    MAX_TIMER_DELAY_SECONDS,
+  );
+  const postRecycleTargetMemoryMib = optionalPositiveInteger(
+    guard.post_recycle_target_memory_mib,
+    'browser.resource_guard.post_recycle_target_memory_mib',
+    DEFAULT_RESOURCE_GUARD_POST_RECYCLE_TARGET_MEMORY_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+  const postRecycleMinimumDropMib = optionalPositiveInteger(
+    guard.post_recycle_minimum_drop_mib,
+    'browser.resource_guard.post_recycle_minimum_drop_mib',
+    DEFAULT_RESOURCE_GUARD_POST_RECYCLE_MINIMUM_DROP_MIB,
+    MAX_RESOURCE_GUARD_MEMORY_MIB,
+  );
+
+  if (warningResetMemoryMib >= warningMemoryMib) {
+    throw new ConfigValidationError(
+      'browser.resource_guard.warning_reset_memory_mib',
+      '必須小於 browser.resource_guard.warning_memory_mib',
+    );
+  }
+  if (warningMemoryMib >= browserRecycleMemoryMib) {
+    throw new ConfigValidationError(
+      'browser.resource_guard.warning_memory_mib',
+      '必須小於 browser.resource_guard.browser_recycle_memory_mib',
+    );
+  }
+  if (browserRecycleMemoryMib >= emergencyMemoryMib) {
+    throw new ConfigValidationError(
+      'browser.resource_guard.browser_recycle_memory_mib',
+      '必須小於 browser.resource_guard.emergency_memory_mib',
+    );
+  }
+  if (postRecycleTargetMemoryMib >= browserRecycleMemoryMib) {
+    throw new ConfigValidationError(
+      'browser.resource_guard.post_recycle_target_memory_mib',
+      '必須小於 browser.resource_guard.browser_recycle_memory_mib',
+    );
+  }
+  if (fastGrowthWindowSeconds < sampleIntervalSeconds) {
+    throw new ConfigValidationError(
+      'browser.resource_guard.fast_growth_window_seconds',
+      '必須大於或等於 browser.resource_guard.sample_interval_seconds',
+    );
+  }
+
+  const effective = computeEffectiveResourceGuardThresholds(
+    {
+      scaleWithStreams,
+      baselineStreams,
+      baseMemoryMib,
+      warningMemoryMib,
+      warningResetMemoryMib,
+      browserRecycleMemoryMib,
+      emergencyMemoryMib,
+      postRecycleTargetMemoryMib,
+    },
+    maxConcurrentStreams,
+  );
+
+  if (
+    !(
+      effective.warningResetMemoryMib < effective.warningMemoryMib &&
+      effective.warningMemoryMib < effective.browserRecycleMemoryMib &&
+      effective.browserRecycleMemoryMib < effective.emergencyMemoryMib
+    )
+  ) {
+    throw new ConfigValidationError(
+      'browser.resource_guard',
+      '縮放後的記憶體門檻必須維持 warning_reset < warning < recycle < emergency',
+    );
+  }
+
+  return {
+    enabled: optionalBoolean(
+      guard.enabled,
+      'browser.resource_guard.enabled',
+      true,
+    ),
+    sampleIntervalSeconds,
+    startupRateGraceSeconds,
+    scaleWithStreams,
+    baselineStreams,
+    baseMemoryMib,
+    warningMemoryMib,
+    warningResetMemoryMib,
+    browserRecycleMemoryMib,
+    browserRecycleConsecutiveSamples,
+    emergencyMemoryMib,
+    emergencySwapMib,
+    fastGrowthMib,
+    fastGrowthWindowSeconds,
+    postRecycleObservationSeconds,
+    postRecycleTargetMemoryMib,
+    postRecycleMinimumDropMib,
+    effective,
   };
 }
 
@@ -706,6 +924,8 @@ export type {
   BrowserConfig,
   DiscordConfig,
   LogLevel,
+  ResourceGuardConfig,
+  ResourceGuardEffectiveThresholds,
   TelegramConfig,
   TwitchApiConfig,
 } from './AppConfig.js';

@@ -5,6 +5,8 @@ export {
   type BrowserConfig,
   type DiscordConfig,
   type LogLevel,
+  type ResourceGuardConfig,
+  type ResourceGuardEffectiveThresholds,
   type StreamQuality,
   type TelegramConfig,
   type TwitchApiConfig,
@@ -20,6 +22,14 @@ export {
   ConfigParseError,
   ConfigValidationError,
 } from './errors.js';
+export {
+  clampEffectiveThresholdsToMemoryMax,
+  computeEffectiveResourceGuardThresholds,
+  mibToBytes,
+  serializableByteCount,
+  type ResourceGuardAnchorThresholds,
+  type ResourceGuardPolicyConfig,
+} from './resourceGuardThresholds.js';
 export {
   YamlRuntimeConfigManager,
   type RuntimeConfigManager,

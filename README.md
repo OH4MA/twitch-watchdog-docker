@@ -62,7 +62,8 @@ twitch_api:
 
 browser:
   stream_quality: 160p
-  page_refresh_interval_seconds: 300
+  page_refresh_interval_seconds: 0
+  resource_telemetry_interval_seconds: 60
 
 telegram:
   enabled: false
@@ -78,7 +79,47 @@ discord:
 - `max_concurrent_streams`：最大同時觀看數。
 - `storage_state_path`：容器內 Playwright storageState 路徑。
 - `browser.stream_quality`：預設 `160p`；設為 `auto` 可停用強制畫質。
-- `browser.page_refresh_interval_seconds`：預設 300 秒，定時重整觀看頁並依頻道錯開；設為 `0` 可關閉。
+- `browser.page_refresh_interval_seconds`：預設 `0`（關閉定時重整以降低 Firefox 記憶體壓力）；設正值可啟用定時重整並依頻道錯開。手動 `/refresh_now` 仍可用。
+  Defaults to `0` (scheduled refresh off to reduce Firefox memory pressure). Positive values re-enable staggered scheduled refresh. Manual `/refresh_now` remains available.
+- `browser.resource_telemetry_interval_seconds`：預設 60 秒輸出 `runtime_resource_snapshot`（含 cgroup 欄位）。
+  Defaults to 60 seconds for `runtime_resource_snapshot` (includes cgroup fields).
+- `browser.resource_guard`：容器級記憶體防護（見下方）。
+  Container-wide memory guard (see below).
+
+### 資源防護與 Docker 限制 / Resource guard and Docker limits
+
+Docker Compose 預設限制（約 **3 同時觀看** 的基線）：
+
+| 設定 | 值 | 說明 |
+| --- | --- | --- |
+| `mem_limit` | 6g | 容器 RAM 上限 |
+| `memswap_limit` | 7g | RAM+swap 合計上限（約 1g swap） |
+| `pids_limit` | 512 | 行程／執行緒上限 |
+
+若 `max_concurrent_streams` 明顯高於 3（例如 5），請提高 Compose 記憶體上限（建議約 10g/11g）後再 recreate 容器。
+If `max_concurrent_streams` is much higher than 3 (e.g. 5), raise Compose memory limits (about 10g/11g recommended) and recreate the container.
+
+`browser.resource_guard` 以 **整容器 cgroup** 記憶體為準（含 Firefox），不是只看 Node.js。YAML 中的 MiB 門檻是 **N=`baseline_streams`（預設 3）錨點**；`scale_with_streams: true` 時：
+
+```text
+effective = base_memory_mib + (anchor - base_memory_mib) * (max_concurrent_streams / baseline_streams)
+```
+
+預設行為：
+
+- 到達 warning 門檻：記錄 `resource_guard_warning`（有 hysteresis）。
+- 連續 sample 達 recycle 門檻：呼叫 `BrowserManager.restart`（`resource_guard_browser_recycle_requested`）。
+- emergency / swap / cgroup OOM 事件 / 過快成長：記錄並 `process.exit(1)`，由 Docker restart。
+- 無 cgroup v2 時只記 `cgroup_metrics_unavailable`，仍依賴 Docker hard limit。
+
+Thresholds are container-wide cgroup memory (including Firefox), not Node-only. YAML MiB values are anchors for `baseline_streams` (default 3) and scale with `max_concurrent_streams` when enabled. Missing cgroup v2 degrades to process metrics only; Docker hard limits remain the host protection.
+
+查詢 cgroup 遙測：
+
+```bash
+docker compose logs --no-log-prefix twitch-watchdog \
+  | rg 'runtime_resource_snapshot|resource_guard_|cgroup_metrics_unavailable|container_restart_requested'
+```
 
 ## Twitch API 設定
 

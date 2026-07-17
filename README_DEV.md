@@ -155,7 +155,7 @@ Useful diagnostic queries:
 
 ```bash
 docker compose logs --no-log-prefix twitch-watchdog \
-  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
+  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed|resource_guard_|cgroup_|runtime_resource_snapshot|container_restart_requested'
 ```
 
 重點事件：
@@ -175,9 +175,25 @@ Important events:
   Confirms whether BrowserManager received page crash/close, removed the page registry entry, and notified SessionManager.
 - `browser_resource_close_started` / `browser_resource_close_completed` / `browser_page_close_timeout`：確認卡住的是 page、context 或 browser close；timeout 事件代表清理超過保護上限。
   Confirms whether page, context, or browser close is stuck; timeout events mean cleanup exceeded the guard limit.
+- `resource_guard_enabled` / `resource_guard_warning` / `resource_guard_browser_recycle_*` / `resource_guard_container_restart_requested`：cgroup 記憶體政策決策與回收。
+  Resource-guard decisions and browser recycle / container restart requests from cgroup memory policy.
+- `cgroup_metrics_unavailable` / `resource_guard_limit_clamped`：cgroup 不可用，或縮放門檻被 `memory.max` 壓低。
+  Cgroup metrics unavailable, or scaled thresholds clamped under `memory.max`.
+- `runtime_resource_snapshot`：同時包含 Node process 欄位與 cgroup 欄位（`cgroupMemoryCurrentBytes` 等）。
+  Includes both Node process fields and cgroup fields (`cgroupMemoryCurrentBytes`, etc.).
 
-貼回問題 log 時，請保留同一段時間內的 `scheduler_tick_*`、`session_*`、`browser_*`、`page_*` 與 `runtime_resource_snapshot` 事件。
-When sharing logs for debugging, include `scheduler_tick_*`, `session_*`, `browser_*`, `page_*`, and `runtime_resource_snapshot` events from the same time window.
+貼回問題 log 時，請保留同一段時間內的 `scheduler_tick_*`、`session_*`、`browser_*`、`page_*`、`resource_guard_*` 與 `runtime_resource_snapshot` 事件。
+When sharing logs for debugging, include `scheduler_tick_*`, `session_*`, `browser_*`, `page_*`, `resource_guard_*`, and `runtime_resource_snapshot` events from the same time window.
+
+### Resource guard thresholds (Phase A/B)
+
+- Scheduled `page_refresh_interval_seconds` default is `0`.
+- Compose defaults: `mem_limit=6g`, `memswap_limit=7g`, `pids_limit=512` (baseline ~3 concurrent streams).
+- YAML `browser.resource_guard.*_memory_mib` values are anchors for `baseline_streams` (default 3).
+- Effective thresholds scale with `max_concurrent_streams` when `scale_with_streams: true`:
+  `effective = base + (anchor - base) * (N / baseline)`.
+- Swap / OOM event / fast-growth rules do not scale with N.
+- Changing `max_concurrent_streams` at runtime via bot does not recompute resource-guard thresholds until process restart (Phase B limitation).
 
 ## 維護原則
 

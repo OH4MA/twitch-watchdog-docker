@@ -15,5 +15,6 @@
 5. 確認缺少 `/app/config.yml` 時 production command 會以非零狀態清楚失敗。
 6. 使用測試專用 Compose override 啟動服務，確認 `config.yml` 對非 root 使用者可寫。
 7. 重啟服務並確認 SIGTERM 會輸出 `service_stopped`。
+8. 驗證 Compose `mem_limit` / `memswap_limit` / `pids_limit`，並在 cgroup v2 可用時讀取容器內 `memory.max` 與 `pids.max`。
 
 Smoke Compose 使用假憑證、空 storageState 與 `network_mode: none`。應用程式無法連線 Helix 或 Twitch 網站，因此測試不依賴也不會存取正式服務。

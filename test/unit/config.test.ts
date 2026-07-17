@@ -58,6 +58,33 @@ describe('YamlConfigLoader', () => {
         blockFonts: false,
         blockKnownTracking: true,
         resourceTelemetryIntervalSeconds: 240,
+        resourceGuard: {
+          enabled: true,
+          sampleIntervalSeconds: 2,
+          startupRateGraceSeconds: 120,
+          scaleWithStreams: true,
+          baselineStreams: 3,
+          baseMemoryMib: 512,
+          warningMemoryMib: 4_096,
+          warningResetMemoryMib: 3_840,
+          browserRecycleMemoryMib: 4_608,
+          browserRecycleConsecutiveSamples: 2,
+          emergencyMemoryMib: 5_376,
+          emergencySwapMib: 768,
+          fastGrowthMib: 512,
+          fastGrowthWindowSeconds: 10,
+          postRecycleObservationSeconds: 20,
+          postRecycleTargetMemoryMib: 4_096,
+          postRecycleMinimumDropMib: 512,
+          effective: {
+            maxConcurrentStreams: 2,
+            warningMemoryMib: 2_901,
+            warningResetMemoryMib: 2_731,
+            browserRecycleMemoryMib: 3_243,
+            emergencyMemoryMib: 3_755,
+            postRecycleTargetMemoryMib: 2_901,
+          },
+        },
       },
       telegram: {
         enabled: false,
@@ -87,8 +114,71 @@ describe('YamlConfigLoader', () => {
     expect(config.twitchApi.clientSecret).toBe(
       'your_twitch_client_secret',
     );
+    expect(config.browser.pageRefreshIntervalSeconds).toBe(0);
+    expect(config.browser.resourceTelemetryIntervalSeconds).toBe(60);
+    expect(config.browser.resourceGuard.enabled).toBe(true);
+    expect(config.browser.resourceGuard.effective.maxConcurrentStreams).toBe(
+      2,
+    );
     expect(config.telegram.enabled).toBe(false);
     expect(config.discord.enabled).toBe(false);
+  });
+
+  it('resource_guard 門檻依 max_concurrent_streams 縮放（N=3 錨點）', async () => {
+    const config = await loadSource(
+      `${configWithChannels([
+        'one',
+        'two',
+        'three',
+        'four',
+        'five',
+      ])}max_concurrent_streams: 5\n`,
+    );
+
+    expect(config.browser.resourceGuard.effective).toEqual({
+      maxConcurrentStreams: 5,
+      warningMemoryMib: 6_485,
+      warningResetMemoryMib: 6_059,
+      browserRecycleMemoryMib: 7_339,
+      emergencyMemoryMib: 8_619,
+      postRecycleTargetMemoryMib: 6_485,
+    });
+  });
+
+  it('resource_guard.scale_with_streams 為 false 時使用絕對門檻', async () => {
+    const config = await loadSource(`channels: [streamer]
+twitch_api:
+  client_id: fixture-client-id
+  access_token: fixture-access-token
+browser:
+  resource_guard:
+    scale_with_streams: false
+    warning_memory_mib: 5000
+    warning_reset_memory_mib: 4500
+    browser_recycle_memory_mib: 5500
+    emergency_memory_mib: 6000
+    post_recycle_target_memory_mib: 4800
+`);
+
+    expect(config.browser.resourceGuard.effective.warningMemoryMib).toBe(5_000);
+    expect(config.browser.resourceGuard.effective.emergencyMemoryMib).toBe(
+      6_000,
+    );
+  });
+
+  it('resource_guard 門檻順序錯誤時拒絕設定', async () => {
+    await expect(
+      loadSource(`channels: [streamer]
+twitch_api:
+  client_id: fixture-client-id
+  access_token: fixture-access-token
+browser:
+  resource_guard:
+    warning_memory_mib: 5000
+    browser_recycle_memory_mib: 4000
+    emergency_memory_mib: 6000
+`),
+    ).rejects.toBeInstanceOf(ConfigValidationError);
   });
 
   it('支援正式 YAML 的引號、註解與 flow sequence', async () => {
@@ -126,7 +216,7 @@ twitch_api:
         navigationTimeoutMs: 30_000,
         pageHealthCheckIntervalSeconds: 60,
         rewardCheckIntervalSeconds: 30,
-        pageRefreshIntervalSeconds: 300,
+        pageRefreshIntervalSeconds: 0,
         restartOnCrash: true,
         streamQuality: '160p',
         enforceStreamQualitySeconds: 120,
@@ -136,7 +226,34 @@ twitch_api:
         blockImages: false,
         blockFonts: false,
         blockKnownTracking: false,
-        resourceTelemetryIntervalSeconds: 300,
+        resourceTelemetryIntervalSeconds: 60,
+        resourceGuard: {
+          enabled: true,
+          sampleIntervalSeconds: 2,
+          startupRateGraceSeconds: 120,
+          scaleWithStreams: true,
+          baselineStreams: 3,
+          baseMemoryMib: 512,
+          warningMemoryMib: 4_096,
+          warningResetMemoryMib: 3_840,
+          browserRecycleMemoryMib: 4_608,
+          browserRecycleConsecutiveSamples: 2,
+          emergencyMemoryMib: 5_376,
+          emergencySwapMib: 768,
+          fastGrowthMib: 512,
+          fastGrowthWindowSeconds: 10,
+          postRecycleObservationSeconds: 20,
+          postRecycleTargetMemoryMib: 4_096,
+          postRecycleMinimumDropMib: 512,
+          effective: {
+            maxConcurrentStreams: 2,
+            warningMemoryMib: 2_901,
+            warningResetMemoryMib: 2_731,
+            browserRecycleMemoryMib: 3_243,
+            emergencyMemoryMib: 3_755,
+            postRecycleTargetMemoryMib: 2_901,
+          },
+        },
       },
       telegram: {
         enabled: false,

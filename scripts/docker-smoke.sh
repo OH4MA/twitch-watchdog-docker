@@ -145,10 +145,37 @@ fi
 wait_for_event_count service_started 1
 "${COMPOSE[@]}" exec -T twitch-watchdog test -w /app/config.yml
 
+# Verify effective cgroup v2 limits when available (do not allocate memory).
+if "${COMPOSE[@]}" exec -T twitch-watchdog sh -ceu '
+  test -r /sys/fs/cgroup/memory.max
+'; then
+  memory_max="$("${COMPOSE[@]}" exec -T twitch-watchdog cat /sys/fs/cgroup/memory.max | tr -d "\r\n")"
+  if [[ "${memory_max}" != "6442450944" ]]; then
+    printf '錯誤：memory.max 應為 6442450944，實際為 %s。\n' "${memory_max}" >&2
+    exit 1
+  fi
+  if "${COMPOSE[@]}" exec -T twitch-watchdog test -r /sys/fs/cgroup/memory.swap.max; then
+    swap_max="$("${COMPOSE[@]}" exec -T twitch-watchdog cat /sys/fs/cgroup/memory.swap.max | tr -d "\r\n")"
+    if [[ "${swap_max}" != "1073741824" && "${swap_max}" != "6442450944" ]]; then
+      # Prefer swap-only 1 GiB; some runtimes report combined values.
+      printf '警告：memory.swap.max 為 %s（預期 1073741824）。\n' "${swap_max}" >&2
+    fi
+  fi
+  if "${COMPOSE[@]}" exec -T twitch-watchdog test -r /sys/fs/cgroup/pids.max; then
+    pids_max="$("${COMPOSE[@]}" exec -T twitch-watchdog cat /sys/fs/cgroup/pids.max | tr -d "\r\n")"
+    if [[ "${pids_max}" != "512" ]]; then
+      printf '錯誤：pids.max 應為 512，實際為 %s。\n' "${pids_max}" >&2
+      exit 1
+    fi
+  fi
+else
+  printf '警告：容器內無法讀取 cgroup v2 memory.max，略過有效資源限制檢查。\n' >&2
+fi
+
 "${COMPOSE[@]}" restart
 wait_for_event_count service_started 2
 
 "${COMPOSE[@]}" stop --timeout 40
 wait_for_event_count service_stopped 2
 
-printf 'Docker smoke test 通過：build、image 內容、缺設定失敗、Compose up、SIGTERM 與 restart 均已驗證。\n'
+printf 'Docker smoke test 通過：build、image 內容、缺設定失敗、Compose up、cgroup 限制、SIGTERM 與 restart 均已驗證。\n'

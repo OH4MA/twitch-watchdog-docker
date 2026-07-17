@@ -203,6 +203,16 @@ export function createDefaultRuntime(
       logger,
       intervalSeconds:
         config.browser.resourceTelemetryIntervalSeconds,
+      resourceGuard: config.browser.resourceGuard,
+      onContainerRestartRequested: async (request) => {
+        logger.error('container_restart_requested', {
+          reason: request.reason,
+          source: request.source,
+          ...(request.fields ?? {}),
+        });
+        await logger.flush();
+        process.exit(1);
+      },
     }),
     new SchedulerStallWatchdog({
       scheduler,

@@ -11,6 +11,16 @@ const columns = [
   'processMaxRssKb',
   'activeChannelCount',
   'browserPageCount',
+  'cgroupMemoryCurrentBytes',
+  'cgroupMemoryPeakBytes',
+  'cgroupSwapCurrentBytes',
+  'cgroupPidsCurrent',
+  'cgroupMemoryEventsHigh',
+  'cgroupMemoryEventsMax',
+  'cgroupMemoryEventsOom',
+  'cgroupMemoryEventsOomKill',
+  'resourceGuardState',
+  'browserRecycleInFlight',
 ];
 
 process.stdout.write(`${columns.join(',')}\n`);

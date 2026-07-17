@@ -18,6 +18,8 @@
 | TypeScript 建置與靜態檢查 | 全部產品程式與測試 | `npm run build`、`npm run lint` |
 | YAML 循環 alias、timer overflow、Helix redirect/body 限制與 rate-limit 上限 | `test/unit/config.test.ts`、`test/unit/twitch-api.test.ts` | `npm test` |
 | 瀏覽器 sandbox、popup 關閉、導向後與領點前 URL 驗證 | `test/unit/browser-manager.test.ts`、`test/unit/channel-session.test.ts`、Docker smoke | `npm test`、`./scripts/docker-smoke.sh` |
+| Docker mem/pids 限制與 cgroup 有效值 | `test/docker/verify-compose.mjs`、`scripts/docker-smoke.sh` | `docker compose config`、`./scripts/docker-smoke.sh` |
+| cgroup 讀取、resource_guard 縮放門檻與政策 | `test/unit/cgroup-v2-reader.test.ts`、`test/unit/resource-guard-*.test.ts`、`test/unit/runtime-resource-monitor.test.ts` | `npm run test:unit` |
 
 Reward click 已由 Playwright 對 `test/mock-pages/**` 的 E2E 測試覆蓋；跨模組整合測試不重複模擬 DOM 點擊。
 

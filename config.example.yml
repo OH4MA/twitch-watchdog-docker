@@ -18,7 +18,8 @@ browser:
   navigation_timeout_ms: 30000
   page_health_check_interval_seconds: 60
   reward_check_interval_seconds: 30
-  page_refresh_interval_seconds: 300
+  # 0 disables scheduled page refresh (recommended). Manual /refresh_now still works.
+  page_refresh_interval_seconds: 0
   restart_on_crash: true
   stream_quality: 160p
   enforce_stream_quality_seconds: 120
@@ -28,7 +29,28 @@ browser:
   block_images: false
   block_fonts: false
   block_known_tracking: false
-  resource_telemetry_interval_seconds: 300
+  resource_telemetry_interval_seconds: 60
+  # Memory thresholds are binary MiB anchors for baseline_streams (default 3).
+  # When scale_with_streams is true, effective = base + (anchor - base) * (N / baseline).
+  # Docker mem_limit defaults to 6g for about 3 concurrent streams; raise it for larger N.
+  resource_guard:
+    enabled: true
+    sample_interval_seconds: 2
+    startup_rate_grace_seconds: 120
+    scale_with_streams: true
+    baseline_streams: 3
+    base_memory_mib: 512
+    warning_memory_mib: 4096
+    warning_reset_memory_mib: 3840
+    browser_recycle_memory_mib: 4608
+    browser_recycle_consecutive_samples: 2
+    emergency_memory_mib: 5376
+    emergency_swap_mib: 768
+    fast_growth_mib: 512
+    fast_growth_window_seconds: 10
+    post_recycle_observation_seconds: 20
+    post_recycle_target_memory_mib: 4096
+    post_recycle_minimum_drop_mib: 512
 
 telegram:
   enabled: false

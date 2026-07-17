@@ -41,6 +41,30 @@ assert(
   'shm_size 必須是 1 GiB',
 );
 
+const MEM_LIMIT_BYTES = 6 * 1024 ** 3;
+const MEMSWAP_LIMIT_BYTES = 7 * 1024 ** 3;
+assert(
+  asNumber(service.mem_limit) === MEM_LIMIT_BYTES ||
+    service.mem_limit === '6g' ||
+    service.mem_limit === '6442450944',
+  'mem_limit 必須是 6 GiB',
+);
+assert(
+  asNumber(service.memswap_limit) === MEMSWAP_LIMIT_BYTES ||
+    service.memswap_limit === '7g' ||
+    service.memswap_limit === '7516192768',
+  'memswap_limit 必須是 7 GiB (RAM+swap combined)',
+);
+assert(
+  asNumber(service.pids_limit) === 512 || service.pids_limit === '512',
+  'pids_limit 必須是 512',
+);
+assert(
+  service.oom_kill_disable !== true &&
+    service.oom_kill_disable !== 'true',
+  '不得停用 OOM killer',
+);
+
 const volumes = service.volumes ?? [];
 assertWritableBind(volumes, '/app/config.yml');
 assertReadOnlyBind(volumes, '/data/browser-state');
@@ -67,6 +91,16 @@ function assertWritableBind(volumes, target) {
   assert(volume !== undefined, `缺少 ${target} volume`);
   assert(volume.type === 'bind', `${target} 必須是 bind mount`);
   assert(volume.read_only !== true, `${target} 必須允許寫入`);
+}
+
+function asNumber(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Number(value))) {
+    return Number(value);
+  }
+  return undefined;
 }
 
 function assert(condition, message) {

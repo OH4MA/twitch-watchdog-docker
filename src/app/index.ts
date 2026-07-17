@@ -20,7 +20,23 @@ export {
   type RemoveProcessHandlers,
 } from './installProcessHandlers.js';
 export {
+  CgroupV2Reader,
+  CgroupV2ReadError,
+  CgroupV2UnavailableError,
+  type CgroupFileSystem,
+  type CgroupMemoryEvents,
+  type CgroupReaderAvailability,
+  type CgroupSnapshot,
+  type CgroupV2ReaderOptions,
+} from './CgroupV2Reader.js';
+export {
+  ResourceGuardPolicy,
+  type ResourceGuardDecision,
+  type ResourceGuardPolicyOptions,
+} from './ResourceGuardPolicy.js';
+export {
   RuntimeResourceMonitor,
+  type ContainerRestartRequest,
   type RuntimeResourceMonitorOptions,
 } from './RuntimeResourceMonitor.js';
 export {

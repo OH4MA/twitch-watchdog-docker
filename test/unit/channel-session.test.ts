@@ -67,6 +67,35 @@ function createConfig(
       blockKnownTracking: overrides.blockKnownTracking ?? false,
       resourceTelemetryIntervalSeconds:
         overrides.resourceTelemetryIntervalSeconds ?? 300,
+      resourceGuard:
+        overrides.resourceGuard ??
+        ({
+          enabled: false,
+          sampleIntervalSeconds: 2,
+          startupRateGraceSeconds: 120,
+          scaleWithStreams: true,
+          baselineStreams: 3,
+          baseMemoryMib: 512,
+          warningMemoryMib: 4_096,
+          warningResetMemoryMib: 3_840,
+          browserRecycleMemoryMib: 4_608,
+          browserRecycleConsecutiveSamples: 2,
+          emergencyMemoryMib: 5_376,
+          emergencySwapMib: 768,
+          fastGrowthMib: 512,
+          fastGrowthWindowSeconds: 10,
+          postRecycleObservationSeconds: 20,
+          postRecycleTargetMemoryMib: 4_096,
+          postRecycleMinimumDropMib: 512,
+          effective: {
+            maxConcurrentStreams: 1,
+            warningMemoryMib: 4_096,
+            warningResetMemoryMib: 3_840,
+            browserRecycleMemoryMib: 4_608,
+            emergencyMemoryMib: 5_376,
+            postRecycleTargetMemoryMib: 4_096,
+          },
+        } as const),
     },
   };
 }

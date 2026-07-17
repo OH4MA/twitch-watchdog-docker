@@ -10,6 +10,42 @@ export interface TwitchApiConfig {
   readonly clientSecret: string;
 }
 
+/**
+ * Container-wide memory guard thresholds.
+ * YAML values are N=baselineStreams anchors when scaleWithStreams is true;
+ * `effective` holds the stream-scaled MiB values used at runtime.
+ */
+export interface ResourceGuardConfig {
+  readonly enabled: boolean;
+  readonly sampleIntervalSeconds: number;
+  readonly startupRateGraceSeconds: number;
+  readonly scaleWithStreams: boolean;
+  readonly baselineStreams: number;
+  readonly baseMemoryMib: number;
+  readonly warningMemoryMib: number;
+  readonly warningResetMemoryMib: number;
+  readonly browserRecycleMemoryMib: number;
+  readonly browserRecycleConsecutiveSamples: number;
+  readonly emergencyMemoryMib: number;
+  readonly emergencySwapMib: number;
+  readonly fastGrowthMib: number;
+  readonly fastGrowthWindowSeconds: number;
+  readonly postRecycleObservationSeconds: number;
+  readonly postRecycleTargetMemoryMib: number;
+  readonly postRecycleMinimumDropMib: number;
+  /** Stream-scaled absolute thresholds (binary MiB). */
+  readonly effective: ResourceGuardEffectiveThresholds;
+}
+
+export interface ResourceGuardEffectiveThresholds {
+  readonly maxConcurrentStreams: number;
+  readonly warningMemoryMib: number;
+  readonly warningResetMemoryMib: number;
+  readonly browserRecycleMemoryMib: number;
+  readonly emergencyMemoryMib: number;
+  readonly postRecycleTargetMemoryMib: number;
+}
+
 export interface BrowserConfig {
   readonly navigationTimeoutMs: number;
   readonly pageHealthCheckIntervalSeconds: number;
@@ -25,6 +61,7 @@ export interface BrowserConfig {
   readonly blockFonts: boolean;
   readonly blockKnownTracking: boolean;
   readonly resourceTelemetryIntervalSeconds: number;
+  readonly resourceGuard: ResourceGuardConfig;
 }
 
 export interface TelegramConfig {

@@ -3,9 +3,11 @@ import type {
   BrowserConfig,
   DiscordConfig,
   LogLevel,
+  ResourceGuardConfig,
   TelegramConfig,
   TwitchApiConfig,
 } from '../../src/config/index.js';
+import { computeEffectiveResourceGuardThresholds } from '../../src/config/resourceGuardThresholds.js';
 
 export interface TestConfigOverrides {
   readonly channels?: readonly string[];
@@ -20,13 +22,56 @@ export interface TestConfigOverrides {
   readonly discord?: Partial<DiscordConfig>;
 }
 
+export function createDefaultResourceGuard(
+  maxConcurrentStreams = 2,
+  overrides: Partial<ResourceGuardConfig> = {},
+): ResourceGuardConfig {
+  const anchors = {
+    scaleWithStreams: overrides.scaleWithStreams ?? true,
+    baselineStreams: overrides.baselineStreams ?? 3,
+    baseMemoryMib: overrides.baseMemoryMib ?? 512,
+    warningMemoryMib: overrides.warningMemoryMib ?? 4_096,
+    warningResetMemoryMib: overrides.warningResetMemoryMib ?? 3_840,
+    browserRecycleMemoryMib: overrides.browserRecycleMemoryMib ?? 4_608,
+    emergencyMemoryMib: overrides.emergencyMemoryMib ?? 5_376,
+    postRecycleTargetMemoryMib:
+      overrides.postRecycleTargetMemoryMib ?? 4_096,
+  };
+
+  return {
+    enabled: overrides.enabled ?? true,
+    sampleIntervalSeconds: overrides.sampleIntervalSeconds ?? 2,
+    startupRateGraceSeconds: overrides.startupRateGraceSeconds ?? 120,
+    scaleWithStreams: anchors.scaleWithStreams,
+    baselineStreams: anchors.baselineStreams,
+    baseMemoryMib: anchors.baseMemoryMib,
+    warningMemoryMib: anchors.warningMemoryMib,
+    warningResetMemoryMib: anchors.warningResetMemoryMib,
+    browserRecycleMemoryMib: anchors.browserRecycleMemoryMib,
+    browserRecycleConsecutiveSamples:
+      overrides.browserRecycleConsecutiveSamples ?? 2,
+    emergencyMemoryMib: anchors.emergencyMemoryMib,
+    emergencySwapMib: overrides.emergencySwapMib ?? 768,
+    fastGrowthMib: overrides.fastGrowthMib ?? 512,
+    fastGrowthWindowSeconds: overrides.fastGrowthWindowSeconds ?? 10,
+    postRecycleObservationSeconds:
+      overrides.postRecycleObservationSeconds ?? 20,
+    postRecycleTargetMemoryMib: anchors.postRecycleTargetMemoryMib,
+    postRecycleMinimumDropMib: overrides.postRecycleMinimumDropMib ?? 512,
+    effective:
+      overrides.effective ??
+      computeEffectiveResourceGuardThresholds(anchors, maxConcurrentStreams),
+  };
+}
+
 export function createTestConfig(
   overrides: TestConfigOverrides = {},
 ): AppConfig {
+  const maxConcurrentStreams = overrides.maxConcurrentStreams ?? 2;
   return {
     channels: overrides.channels ?? ['first_channel', 'second_channel'],
     checkIntervalSeconds: overrides.checkIntervalSeconds ?? 60,
-    maxConcurrentStreams: overrides.maxConcurrentStreams ?? 2,
+    maxConcurrentStreams,
     headless: overrides.headless ?? true,
     storageStatePath:
       overrides.storageStatePath ?? '/tmp/test-storage-state.json',
@@ -52,7 +97,11 @@ export function createTestConfig(
       blockFonts: false,
       blockKnownTracking: false,
       resourceTelemetryIntervalSeconds: 300,
+      resourceGuard: createDefaultResourceGuard(maxConcurrentStreams),
       ...overrides.browser,
+      resourceGuard:
+        overrides.browser?.resourceGuard ??
+        createDefaultResourceGuard(maxConcurrentStreams),
     },
     telegram: {
       enabled: false,
