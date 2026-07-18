@@ -112,6 +112,14 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
     }
   }
 
+  /**
+   * Notify the guard that the browser was restarted outside the guard's own
+   * recycle path (crash-loop recycle, disconnect recovery, etc.).
+   */
+  public notifyBrowserRestarted(): void {
+    this.policy?.noteBrowserRestart();
+  }
+
   private scheduleNextSample(): void {
     if (this.stopped) {
       return;
@@ -416,6 +424,8 @@ function toPolicyConfig(guard: ResourceGuardConfig): ResourceGuardPolicyConfig {
     emergencySwapMib: guard.emergencySwapMib,
     fastGrowthMib: guard.fastGrowthMib,
     fastGrowthWindowSeconds: guard.fastGrowthWindowSeconds,
+    postBrowserRestartRateGraceSeconds:
+      guard.postBrowserRestartRateGraceSeconds,
     postRecycleObservationSeconds: guard.postRecycleObservationSeconds,
     postRecycleMinimumDropMib: guard.postRecycleMinimumDropMib,
     effective: guard.effective,

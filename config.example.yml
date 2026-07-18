@@ -46,8 +46,13 @@ browser:
     browser_recycle_consecutive_samples: 2
     emergency_memory_mib: 5376
     emergency_swap_mib: 768
+    # Rate rule: growth >= this many MiB within the window, AND current
+    # memory already at/above warning_memory_mib (absolute floor).
     fast_growth_mib: 1024
     fast_growth_window_seconds: 30
+    # After any browser restart, ignore fast_memory_growth for this long so
+    # expected session refill is not treated as a fatal leak.
+    post_browser_restart_rate_grace_seconds: 120
     post_recycle_observation_seconds: 20
     post_recycle_target_memory_mib: 4096
     post_recycle_minimum_drop_mib: 512

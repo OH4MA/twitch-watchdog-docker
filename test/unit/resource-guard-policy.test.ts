@@ -38,6 +38,7 @@ function createPolicy(now: () => number = () => 0): ResourceGuardPolicy {
       emergencySwapMib: 768,
       fastGrowthMib: 1_024,
       fastGrowthWindowSeconds: 30,
+      postBrowserRestartRateGraceSeconds: 120,
       postRecycleObservationSeconds: 20,
       postRecycleMinimumDropMib: 512,
       effective: {
@@ -140,7 +141,7 @@ describe('ResourceGuardPolicy', () => {
     });
   });
 
-  it('啟動 grace 期間忽略 fast growth，之後才觸發', () => {
+  it('啟動 grace 期間忽略 fast growth，之後在 warning 以上才觸發', () => {
     let now = 0;
     const policy = createPolicy(() => now);
 
@@ -150,15 +151,71 @@ describe('ResourceGuardPolicy', () => {
       action: 'none',
     });
 
+    // After startup grace: growth is large but absolute level stays below warning.
     now = 120_000;
     policy.evaluate(snapshot({ atMs: 120_000, memoryMib: 1_000 }));
     now = 150_000;
     expect(
       policy.evaluate(snapshot({ atMs: 150_000, memoryMib: 2_100 })),
+    ).toEqual({ action: 'none' });
+
+    // Same rate of growth, but only fatal when already at/above warning.
+    now = 160_000;
+    policy.evaluate(snapshot({ atMs: 160_000, memoryMib: 4_100 }));
+    now = 190_000;
+    expect(
+      policy.evaluate(snapshot({ atMs: 190_000, memoryMib: 5_200 })),
     ).toEqual({
       action: 'restart_container',
       reason: 'fast_memory_growth',
     });
+  });
+
+  it('browser restart 後清除 sample history 並套用 rate grace', () => {
+    let now = 0;
+    const policy = createPolicy(() => now);
+
+    now = 120_000;
+    policy.evaluate(snapshot({ atMs: 120_000, memoryMib: 4_100 }));
+    policy.noteBrowserRestart();
+
+    // During post-restart grace, large refill toward warning is ignored.
+    now = 150_000;
+    expect(
+      policy.evaluate(snapshot({ atMs: 150_000, memoryMib: 5_200 })),
+    ).toEqual({ action: 'none' });
+    expect(policy.isRateGrowthSuppressed()).toBe(true);
+
+    // After grace expires, growth above warning still restarts.
+    now = 240_000;
+    expect(policy.isRateGrowthSuppressed()).toBe(false);
+    policy.evaluate(snapshot({ atMs: 240_000, memoryMib: 4_100 }));
+    now = 270_000;
+    expect(
+      policy.evaluate(snapshot({ atMs: 270_000, memoryMib: 5_200 })),
+    ).toEqual({
+      action: 'restart_container',
+      reason: 'fast_memory_growth',
+    });
+  });
+
+  it('post-recycle observation 期間也不會因 refill 觸發 fast_memory_growth', () => {
+    let now = 0;
+    const policy = createPolicy(() => now);
+
+    now = 120_000;
+    policy.beginRecycleObservation(mibToBytes(5_000));
+    expect(policy.isRateGrowthSuppressed()).toBe(true);
+
+    now = 140_000;
+    // Memory drops after recycle then climbs during session refill.
+    expect(
+      policy.evaluate(snapshot({ atMs: 140_000, memoryMib: 400 })),
+    ).toEqual({ action: 'none' });
+    now = 160_000;
+    expect(
+      policy.evaluate(snapshot({ atMs: 160_000, memoryMib: 1_700 })),
+    ).toEqual({ action: 'none' });
   });
 
   it('post-recycle 成功後清除觀察；逾時則 container restart', () => {

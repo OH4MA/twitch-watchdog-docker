@@ -75,6 +75,7 @@ const CONFIG: AppConfig = Object.freeze({
       emergencySwapMib: 768,
       fastGrowthMib: 1_024,
       fastGrowthWindowSeconds: 30,
+      postBrowserRestartRateGraceSeconds: 120,
       postRecycleObservationSeconds: 20,
       postRecycleTargetMemoryMib: 4_096,
       postRecycleMinimumDropMib: 512,

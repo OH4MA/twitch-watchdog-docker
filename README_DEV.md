@@ -193,6 +193,8 @@ When sharing logs for debugging, include `scheduler_tick_*`, `session_*`, `brows
 - Effective thresholds scale with `max_concurrent_streams` when `scale_with_streams: true`:
   `effective = base + (anchor - base) * (N / baseline)`.
 - Swap / OOM event / fast-growth rules do not scale with N.
+- `fast_memory_growth` requires both: (1) growth ≥ `fast_growth_mib` within `fast_growth_window_seconds`, and (2) current cgroup memory ≥ effective warning. Low absolute refill after browser restart is not fatal.
+- After any successful browser restart (resource-guard recycle, crash-loop recycle, disconnect recovery), rate growth is suppressed for `post_browser_restart_rate_grace_seconds` (default 120) and sample history is cleared.
 - Changing `max_concurrent_streams` at runtime via bot does not recompute resource-guard thresholds until process restart (Phase B limitation).
 
 ### Container restart and browser cleanup (Phase C/D)

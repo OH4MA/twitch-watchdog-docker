@@ -116,6 +116,10 @@ export function createDefaultRuntime(
     logger,
   });
 
+  const runtimeResourceMonitorReference: {
+    current?: RuntimeResourceMonitor;
+  } = {};
+
   const browserManager = new DefaultBrowserManager(config, {
     logger,
     onInvalidated: (invalidation) =>
@@ -129,6 +133,8 @@ export function createDefaultRuntime(
         source: 'browser_manager',
         ...(request.fields === undefined ? {} : { fields: request.fields }),
       }),
+    onBrowserRestarted: () =>
+      runtimeResourceMonitorReference.current?.notifyBrowserRestarted(),
   });
   const rewardClaimer = new RewardClaimer({
     logger,
@@ -213,17 +219,20 @@ export function createDefaultRuntime(
     setMaxConcurrentStreams: (value) =>
       runtimeConfigManager.setMaxConcurrentStreams(value),
   };
+  const runtimeResourceMonitor = new RuntimeResourceMonitor({
+    browserManager,
+    sessionManager,
+    logger,
+    intervalSeconds:
+      config.browser.resourceTelemetryIntervalSeconds,
+    resourceGuard: config.browser.resourceGuard,
+    onContainerRestartRequested: (request) =>
+      containerRestartController.request(request),
+  });
+  runtimeResourceMonitorReference.current = runtimeResourceMonitor;
+
   const integrations: ApplicationIntegration[] = [
-    new RuntimeResourceMonitor({
-      browserManager,
-      sessionManager,
-      logger,
-      intervalSeconds:
-        config.browser.resourceTelemetryIntervalSeconds,
-      resourceGuard: config.browser.resourceGuard,
-      onContainerRestartRequested: (request) =>
-        containerRestartController.request(request),
-    }),
+    runtimeResourceMonitor,
     new SchedulerStallWatchdog({
       scheduler,
       logger,

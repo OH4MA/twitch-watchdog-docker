@@ -54,6 +54,8 @@ export function createDefaultResourceGuard(
     emergencySwapMib: overrides.emergencySwapMib ?? 768,
     fastGrowthMib: overrides.fastGrowthMib ?? 1_024,
     fastGrowthWindowSeconds: overrides.fastGrowthWindowSeconds ?? 30,
+    postBrowserRestartRateGraceSeconds:
+      overrides.postBrowserRestartRateGraceSeconds ?? 120,
     postRecycleObservationSeconds:
       overrides.postRecycleObservationSeconds ?? 20,
     postRecycleTargetMemoryMib: anchors.postRecycleTargetMemoryMib,

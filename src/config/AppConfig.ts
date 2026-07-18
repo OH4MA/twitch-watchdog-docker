@@ -30,6 +30,11 @@ export interface ResourceGuardConfig {
   readonly emergencySwapMib: number;
   readonly fastGrowthMib: number;
   readonly fastGrowthWindowSeconds: number;
+  /**
+   * After any browser restart/recycle, suppress fast_memory_growth for this
+   * many seconds so session refill is not treated as fatal growth.
+   */
+  readonly postBrowserRestartRateGraceSeconds: number;
   readonly postRecycleObservationSeconds: number;
   readonly postRecycleTargetMemoryMib: number;
   readonly postRecycleMinimumDropMib: number;

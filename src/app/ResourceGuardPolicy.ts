@@ -53,6 +53,8 @@ export class ResourceGuardPolicy {
         memoryBeforeBytes: bigint;
       }
     | undefined;
+  /** Monotonic deadline: suppress fast_memory_growth until this time. */
+  private rateGrowthSuppressedUntilMs = 0;
 
   public constructor(options: ResourceGuardPolicyOptions) {
     this.config = options.config;
@@ -78,10 +80,35 @@ export class ResourceGuardPolicy {
         this.now() + this.config.postRecycleObservationSeconds * 1_000,
     };
     this.consecutiveHighSamples = 0;
+    // Browser refill after recycle must not be misclassified as fast growth.
+    this.noteBrowserRestart();
   }
 
   public clearRecycleObservation(): void {
     this.recycleObservation = undefined;
+  }
+
+  /**
+   * Call after any successful browser restart/recycle.
+   * Clears growth sample history and applies post-restart rate grace so
+   * expected session refill is not treated as fatal memory growth.
+   */
+  public noteBrowserRestart(): void {
+    this.sampleHistory = [];
+    this.consecutiveHighSamples = 0;
+    const graceMs = this.config.postBrowserRestartRateGraceSeconds * 1_000;
+    if (graceMs <= 0) {
+      this.rateGrowthSuppressedUntilMs = 0;
+      return;
+    }
+    const untilMs = this.now() + graceMs;
+    if (untilMs > this.rateGrowthSuppressedUntilMs) {
+      this.rateGrowthSuppressedUntilMs = untilMs;
+    }
+  }
+
+  public isRateGrowthSuppressed(): boolean {
+    return this.now() < this.rateGrowthSuppressedUntilMs;
   }
 
   public evaluate(snapshot: CgroupSnapshot): ResourceGuardDecision {
@@ -146,11 +173,11 @@ export class ResourceGuardPolicy {
       return eventEmergency;
     }
 
-    const graceMs = this.config.startupRateGraceSeconds * 1_000;
-    const pastGrace =
-      this.startedAtMs !== undefined &&
-      snapshot.sampledAtMonotonicMs - this.startedAtMs >= graceMs;
-    if (pastGrace && this.hasFastGrowth(snapshot)) {
+    if (this.shouldIgnoreFastGrowth(snapshot)) {
+      return undefined;
+    }
+
+    if (this.hasFastGrowth(snapshot)) {
       return {
         action: 'restart_container',
         reason: 'fast_memory_growth',
@@ -158,6 +185,21 @@ export class ResourceGuardPolicy {
     }
 
     return undefined;
+  }
+
+  private shouldIgnoreFastGrowth(snapshot: CgroupSnapshot): boolean {
+    const startupGraceMs = this.config.startupRateGraceSeconds * 1_000;
+    const pastStartupGrace =
+      this.startedAtMs !== undefined &&
+      snapshot.sampledAtMonotonicMs - this.startedAtMs >= startupGraceMs;
+    if (!pastStartupGrace) {
+      return true;
+    }
+    // noteBrowserRestart() records the deadline with the same now() clock.
+    if (this.now() < this.rateGrowthSuppressedUntilMs) {
+      return true;
+    }
+    return false;
   }
 
   private evaluateEventDeltas(
@@ -285,6 +327,16 @@ export class ResourceGuardPolicy {
   }
 
   private hasFastGrowth(snapshot: CgroupSnapshot): boolean {
+    // Rate rule alone is too noisy at low absolute usage (browser refill after
+    // recycle often grows ~1–2 GiB from a near-empty trough). Require the
+    // current level to already be near the warning waterline.
+    const minAbsoluteBytes = mibToBytes(
+      this.config.effective.warningMemoryMib,
+    );
+    if (snapshot.memoryCurrentBytes < minAbsoluteBytes) {
+      return false;
+    }
+
     const windowMs = this.config.fastGrowthWindowSeconds * 1_000;
     const growthBytes = mibToBytes(this.config.fastGrowthMib);
     const nowMs = snapshot.sampledAtMonotonicMs;

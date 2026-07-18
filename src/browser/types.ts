@@ -111,12 +111,17 @@ export type BrowserFatalRecoveryObserver = (request: {
   readonly fields?: Readonly<Record<string, unknown>>;
 }) => Promise<void> | void;
 
+/** Fired after a successful browser restart/recycle (manual or automatic). */
+export type BrowserRestartedObserver = () => void;
+
 export interface BrowserManagerDependencies {
   readonly launcher?: BrowserLauncher;
   readonly logger?: BrowserManagerLogger;
   readonly onInvalidated?: BrowserInvalidationObserver;
   /** Called when browser recovery is exhausted or termination cannot be proved. */
   readonly onFatalRecovery?: BrowserFatalRecoveryObserver;
+  /** Called after browser process is successfully replaced. */
+  readonly onBrowserRestarted?: BrowserRestartedObserver;
   readonly sleep?: (milliseconds: number) => Promise<void>;
   readonly now?: () => number;
   readonly resourceCloseTimeoutMs?: number;

@@ -48,6 +48,7 @@ const DEFAULT_RESOURCE_GUARD_EMERGENCY_MEMORY_MIB = 5_376;
 const DEFAULT_RESOURCE_GUARD_EMERGENCY_SWAP_MIB = 768;
 const DEFAULT_RESOURCE_GUARD_FAST_GROWTH_MIB = 1_024;
 const DEFAULT_RESOURCE_GUARD_FAST_GROWTH_WINDOW_SECONDS = 30;
+const DEFAULT_RESOURCE_GUARD_POST_BROWSER_RESTART_RATE_GRACE_SECONDS = 120;
 const DEFAULT_RESOURCE_GUARD_POST_RECYCLE_OBSERVATION_SECONDS = 20;
 const DEFAULT_RESOURCE_GUARD_POST_RECYCLE_TARGET_MEMORY_MIB = 4_096;
 const DEFAULT_RESOURCE_GUARD_POST_RECYCLE_MINIMUM_DROP_MIB = 512;
@@ -619,6 +620,13 @@ function buildResourceGuardConfig(
     DEFAULT_RESOURCE_GUARD_FAST_GROWTH_WINDOW_SECONDS,
     MAX_TIMER_DELAY_SECONDS,
   );
+  const postBrowserRestartRateGraceSeconds = optionalIntegerAtLeast(
+    guard.post_browser_restart_rate_grace_seconds,
+    'browser.resource_guard.post_browser_restart_rate_grace_seconds',
+    DEFAULT_RESOURCE_GUARD_POST_BROWSER_RESTART_RATE_GRACE_SECONDS,
+    0,
+    MAX_TIMER_DELAY_SECONDS,
+  );
   const postRecycleObservationSeconds = optionalPositiveInteger(
     guard.post_recycle_observation_seconds,
     'browser.resource_guard.post_recycle_observation_seconds',
@@ -715,6 +723,7 @@ function buildResourceGuardConfig(
     emergencySwapMib,
     fastGrowthMib,
     fastGrowthWindowSeconds,
+    postBrowserRestartRateGraceSeconds,
     postRecycleObservationSeconds,
     postRecycleTargetMemoryMib,
     postRecycleMinimumDropMib,

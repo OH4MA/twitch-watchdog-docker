@@ -18,6 +18,7 @@ import type {
   BrowserManagerDependencies,
   BrowserManagerLogger,
   BrowserPageAdapter,
+  BrowserRestartedObserver,
   BrowserTeardownResult,
   CloseOutcome,
   DetachedResources,
@@ -41,6 +42,7 @@ export type {
   BrowserManagerDependencies,
   BrowserManagerLogger,
   BrowserPageAdapter,
+  BrowserRestartedObserver,
   BrowserTeardownResult,
   CloseOutcome,
   ResourceBlockingOptions,
@@ -77,6 +79,7 @@ export class DefaultBrowserManager implements BrowserManager {
   private readonly logger: BrowserManagerLogger;
   private readonly onInvalidated: BrowserInvalidationObserver | undefined;
   private readonly onFatalRecovery: BrowserFatalRecoveryObserver | undefined;
+  private readonly onBrowserRestarted: BrowserRestartedObserver | undefined;
   private readonly sleep: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
   private readonly restartBackoffMs: number;
@@ -117,6 +120,7 @@ export class DefaultBrowserManager implements BrowserManager {
     this.logger = dependencies.logger ?? NOOP_LOGGER;
     this.onInvalidated = dependencies.onInvalidated;
     this.onFatalRecovery = dependencies.onFatalRecovery;
+    this.onBrowserRestarted = dependencies.onBrowserRestarted;
     this.sleep =
       dependencies.sleep ??
       ((milliseconds) =>
@@ -373,6 +377,7 @@ export class DefaultBrowserManager implements BrowserManager {
             mode: 'manual',
             affectedChannelCount: invalidatedChannels.length,
           });
+          this.emitBrowserRestarted();
         } catch (error: unknown) {
           relaunchError = error;
           this.logger.error('browser_restart_failed', {
@@ -752,7 +757,18 @@ export class DefaultBrowserManager implements BrowserManager {
         mode: 'automatic',
         attempt: schedule.attempt,
       });
+      this.emitBrowserRestarted();
     });
+  }
+
+  private emitBrowserRestarted(): void {
+    try {
+      this.onBrowserRestarted?.();
+    } catch (error: unknown) {
+      this.logger.debug('browser_restarted_observer_failed', {
+        error: this.safeError(error),
+      });
+    }
   }
 
   private detachResourcesUnlocked(): DetachedResources {

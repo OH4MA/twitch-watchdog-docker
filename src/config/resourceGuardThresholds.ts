@@ -144,6 +144,7 @@ export type ResourceGuardPolicyConfig = Pick<
   | 'emergencySwapMib'
   | 'fastGrowthMib'
   | 'fastGrowthWindowSeconds'
+  | 'postBrowserRestartRateGraceSeconds'
   | 'postRecycleObservationSeconds'
   | 'postRecycleMinimumDropMib'
   | 'sampleIntervalSeconds'

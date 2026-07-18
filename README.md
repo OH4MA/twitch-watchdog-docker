@@ -109,10 +109,11 @@ effective = base_memory_mib + (anchor - base_memory_mib) * (max_concurrent_strea
 
 - 到達 warning 門檻：記錄 `resource_guard_warning`（有 hysteresis）。
 - 連續 sample 達 recycle 門檻：呼叫 `BrowserManager.restart`（`resource_guard_browser_recycle_requested`）。
-- emergency / swap / cgroup OOM 事件 / 過快成長：記錄並 `process.exit(1)`，由 Docker restart。
+- emergency / swap / cgroup OOM 事件：記錄並 `process.exit(1)`，由 Docker restart。
+- 過快成長（`fast_memory_growth`）：僅在 **目前記憶體已達 warning 以上**，且視窗內成長量達門檻時才重開容器；browser 重啟後預設 120 秒內忽略此規則（避免 session 回填被誤判）。
 - 無 cgroup v2 時只記 `cgroup_metrics_unavailable`，仍依賴 Docker hard limit。
 
-Thresholds are container-wide cgroup memory (including Firefox), not Node-only. YAML MiB values are anchors for `baseline_streams` (default 3) and scale with `max_concurrent_streams` when enabled. Missing cgroup v2 degrades to process metrics only; Docker hard limits remain the host protection.
+Thresholds are container-wide cgroup memory (including Firefox), not Node-only. YAML MiB values are anchors for `baseline_streams` (default 3) and scale with `max_concurrent_streams` when enabled. `fast_memory_growth` requires both a rate spike and absolute memory at/above the warning waterline; browser restarts apply a short rate-rule grace so session refill is not fatal. Missing cgroup v2 degrades to process metrics only; Docker hard limits remain the host protection.
 
 查詢 cgroup 遙測：
 
