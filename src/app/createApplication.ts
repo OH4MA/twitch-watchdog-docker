@@ -25,6 +25,7 @@ import {
   type Logger,
 } from '../logging/index.js';
 import type { BotCommandContext } from '../notifications/BotCommandContext.js';
+import type { ContainerRestartNotification } from '../notifications/BotNotifications.js';
 import {
   DefaultWatchdogScheduler,
   selectActiveChannels,
@@ -44,7 +45,10 @@ import {
   type ApplicationIntegration,
   type RuntimeFactory,
 } from './AppRunner.js';
-import { ContainerRestartController } from './ContainerRestartController.js';
+import {
+  ContainerRestartController,
+  type ContainerRestartRequest,
+} from './ContainerRestartController.js';
 import { RuntimeResourceMonitor } from './RuntimeResourceMonitor.js';
 import { SchedulerStallWatchdog } from './SchedulerStallWatchdog.js';
 
@@ -114,6 +118,10 @@ export function createDefaultRuntime(
 
   const containerRestartController = new ContainerRestartController({
     logger,
+    onNotify: (request) =>
+      notify((bot) =>
+        bot.notifyContainerRestart(toContainerRestartNotification(request)),
+      ),
   });
 
   const runtimeResourceMonitorReference: {
@@ -122,19 +130,25 @@ export function createDefaultRuntime(
 
   const browserManager = new DefaultBrowserManager(config, {
     logger,
-    onInvalidated: (invalidation) =>
+    onInvalidated: (invalidation) => {
+      if (invalidation.reason === 'page_crashed') {
+        void notify((bot) => bot.notifyPageCrash(invalidation.channel));
+      }
       sessionManagerReference.current?.invalidate(
         invalidation.channel,
         invalidation.reason,
-      ),
+      );
+    },
     onFatalRecovery: (request) =>
       containerRestartController.request({
         reason: request.reason,
         source: 'browser_manager',
         ...(request.fields === undefined ? {} : { fields: request.fields }),
       }),
-    onBrowserRestarted: () =>
-      runtimeResourceMonitorReference.current?.notifyBrowserRestarted(),
+    onBrowserRestarted: (event) => {
+      runtimeResourceMonitorReference.current?.notifyBrowserRestarted();
+      void notify((bot) => bot.notifyBrowserRestart(event));
+    },
   });
   const rewardClaimer = new RewardClaimer({
     logger,
@@ -152,8 +166,6 @@ export function createDefaultRuntime(
     logger,
     onInvalidated: (channel, reason) =>
       sessionManagerReference.current?.invalidate(channel, reason),
-    onPageRefresh: (event) =>
-      notify((bot) => bot.notifyPageRefresh(event)),
     onContainerRestartRequested: (request) =>
       containerRestartController.request({
         reason: request.reason,
@@ -274,5 +286,26 @@ export function createDefaultRuntime(
     sessionManager,
     scheduler,
     integrations,
+  };
+}
+
+function toContainerRestartNotification(
+  request: ContainerRestartRequest,
+): ContainerRestartNotification {
+  const fields = request.fields ?? {};
+  const detailReason =
+    typeof fields.reason === 'string' && fields.reason !== request.reason
+      ? fields.reason
+      : undefined;
+  const channel =
+    typeof fields.channel === 'string' && fields.channel.length > 0
+      ? fields.channel
+      : undefined;
+
+  return {
+    reason: request.reason,
+    source: request.source,
+    ...(detailReason === undefined ? {} : { detailReason }),
+    ...(channel === undefined ? {} : { channel }),
   };
 }

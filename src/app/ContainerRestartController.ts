@@ -7,15 +7,23 @@ export interface ContainerRestartRequest {
   readonly fields?: Readonly<Record<string, unknown>>;
 }
 
+export type ContainerRestartNotifyObserver = (
+  request: ContainerRestartRequest,
+) => Promise<void> | void;
+
 export interface ContainerRestartControllerOptions {
   readonly logger: Pick<Logger, 'error' | 'flush'>;
   readonly exit?: (code: number) => void;
   readonly flushTimeoutMs?: number;
+  /** Best-effort bot / external notify before exit. Bounded by notifyTimeoutMs. */
+  readonly onNotify?: ContainerRestartNotifyObserver;
+  readonly notifyTimeoutMs?: number;
   readonly setTimeoutFn?: typeof setTimeout;
   readonly clearTimeoutFn?: typeof clearTimeout;
 }
 
 const DEFAULT_FLUSH_TIMEOUT_MS = 5_000;
+const DEFAULT_NOTIFY_TIMEOUT_MS = 3_000;
 
 /**
  * Single-flight fatal exit: first request wins, bounded logger flush, then exit(1).
@@ -25,6 +33,8 @@ export class ContainerRestartController {
   private readonly logger: Pick<Logger, 'error' | 'flush'>;
   private readonly exit: (code: number) => void;
   private readonly flushTimeoutMs: number;
+  private readonly onNotify: ContainerRestartNotifyObserver | undefined;
+  private readonly notifyTimeoutMs: number;
   private readonly setTimeoutFn: typeof setTimeout;
   private readonly clearTimeoutFn: typeof clearTimeout;
   private flight: Promise<void> | undefined;
@@ -35,6 +45,11 @@ export class ContainerRestartController {
     this.flushTimeoutMs = positiveInteger(
       options.flushTimeoutMs,
       DEFAULT_FLUSH_TIMEOUT_MS,
+    );
+    this.onNotify = options.onNotify;
+    this.notifyTimeoutMs = positiveInteger(
+      options.notifyTimeoutMs,
+      DEFAULT_NOTIFY_TIMEOUT_MS,
     );
     this.setTimeoutFn = options.setTimeoutFn ?? setTimeout;
     this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout;
@@ -82,8 +97,36 @@ export class ContainerRestartController {
       ...fields,
     });
 
+    await this.notifyWithTimeout(request);
     await this.flushWithTimeout();
     this.exit(1);
+  }
+
+  private async notifyWithTimeout(
+    request: ContainerRestartRequest,
+  ): Promise<void> {
+    const observer = this.onNotify;
+    if (observer === undefined) {
+      return;
+    }
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.resolve()
+          .then(() => observer(request))
+          .catch(() => undefined),
+        new Promise<void>((resolve) => {
+          timeoutHandle = this.setTimeoutFn(() => {
+            resolve();
+          }, this.notifyTimeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle !== undefined) {
+        this.clearTimeoutFn(timeoutHandle);
+      }
+    }
   }
 
   private async flushWithTimeout(): Promise<void> {

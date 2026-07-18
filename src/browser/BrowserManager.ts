@@ -18,6 +18,7 @@ import type {
   BrowserManagerDependencies,
   BrowserManagerLogger,
   BrowserPageAdapter,
+  BrowserRestartedEvent,
   BrowserRestartedObserver,
   BrowserTeardownResult,
   CloseOutcome,
@@ -42,6 +43,7 @@ export type {
   BrowserManagerDependencies,
   BrowserManagerLogger,
   BrowserPageAdapter,
+  BrowserRestartedEvent,
   BrowserRestartedObserver,
   BrowserTeardownResult,
   CloseOutcome,
@@ -377,7 +379,7 @@ export class DefaultBrowserManager implements BrowserManager {
             mode: 'manual',
             affectedChannelCount: invalidatedChannels.length,
           });
-          this.emitBrowserRestarted();
+          this.emitBrowserRestarted({ mode: 'manual' });
         } catch (error: unknown) {
           relaunchError = error;
           this.logger.error('browser_restart_failed', {
@@ -757,13 +759,13 @@ export class DefaultBrowserManager implements BrowserManager {
         mode: 'automatic',
         attempt: schedule.attempt,
       });
-      this.emitBrowserRestarted();
+      this.emitBrowserRestarted({ mode: 'automatic' });
     });
   }
 
-  private emitBrowserRestarted(): void {
+  private emitBrowserRestarted(event: BrowserRestartedEvent): void {
     try {
-      this.onBrowserRestarted?.();
+      this.onBrowserRestarted?.(event);
     } catch (error: unknown) {
       this.logger.debug('browser_restarted_observer_failed', {
         error: this.safeError(error),

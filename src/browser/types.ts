@@ -111,8 +111,14 @@ export type BrowserFatalRecoveryObserver = (request: {
   readonly fields?: Readonly<Record<string, unknown>>;
 }) => Promise<void> | void;
 
+export interface BrowserRestartedEvent {
+  readonly mode: 'automatic' | 'manual';
+}
+
 /** Fired after a successful browser restart/recycle (manual or automatic). */
-export type BrowserRestartedObserver = () => void;
+export type BrowserRestartedObserver = (
+  event: BrowserRestartedEvent,
+) => void;
 
 export interface BrowserManagerDependencies {
   readonly launcher?: BrowserLauncher;

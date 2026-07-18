@@ -1,11 +1,15 @@
-import type {
-  ChannelSessionRefreshEvent,
-  RewardClaimResult,
-} from '../browser/index.js';
+import type { RewardClaimResult } from '../browser/index.js';
 import type { AppConfig } from '../config/index.js';
 import { ConfigValidationError } from '../config/index.js';
 import type { Logger } from '../logging/index.js';
 import type { BotCommandContext } from '../notifications/BotCommandContext.js';
+import {
+  formatBrowserRestartMessage,
+  formatContainerRestartMessage,
+  formatPageCrashMessage,
+  type BrowserRestartNotification,
+  type ContainerRestartNotification,
+} from '../notifications/BotNotifications.js';
 import type { StreamStatusChange } from '../scheduler/index.js';
 import type {
   DiscordApi,
@@ -17,7 +21,9 @@ export interface DiscordBot {
   stop(reason: string): Promise<void>;
   notifyStreamStatus(change: StreamStatusChange): Promise<void>;
   notifyReward(result: RewardClaimResult): Promise<void>;
-  notifyPageRefresh(event: ChannelSessionRefreshEvent): Promise<void>;
+  notifyPageCrash(channel: string): Promise<void>;
+  notifyBrowserRestart(event: BrowserRestartNotification): Promise<void>;
+  notifyContainerRestart(event: ContainerRestartNotification): Promise<void>;
 }
 
 export interface DiscordGatewaySocket {
@@ -190,10 +196,20 @@ export class DefaultDiscordBot implements DiscordBot {
     return Promise.resolve();
   }
 
-  public notifyPageRefresh(
-    event: ChannelSessionRefreshEvent,
+  public notifyPageCrash(channel: string): Promise<void> {
+    return this.broadcast(formatPageCrashMessage(channel));
+  }
+
+  public notifyBrowserRestart(
+    event: BrowserRestartNotification,
   ): Promise<void> {
-    return this.broadcast(`🔄 ${event.channel} 正在重整 Twitch 播放器`);
+    return this.broadcast(formatBrowserRestartMessage(event));
+  }
+
+  public notifyContainerRestart(
+    event: ContainerRestartNotification,
+  ): Promise<void> {
+    return this.broadcast(formatContainerRestartMessage(event));
   }
 
   private identify(): void {

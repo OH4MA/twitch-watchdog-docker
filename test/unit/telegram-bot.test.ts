@@ -150,20 +150,30 @@ describe('DefaultTelegramBot', () => {
     ]);
   });
 
-  it('定時重整開始時推送 Telegram 提醒', async () => {
+  it('推送 page crash、browser restart 與 container restart 通知', async () => {
     const harness = createHarness([]);
 
-    await harness.bot.notifyPageRefresh({
+    await harness.bot.notifyPageCrash('first');
+    await harness.bot.notifyBrowserRestart({ mode: 'automatic' });
+    await harness.bot.notifyBrowserRestart({ mode: 'manual' });
+    await harness.bot.notifyContainerRestart({
+      reason: 'browser_crash_loop',
+      source: 'browser_manager',
+      detailReason: 'channel_page_crash_loop',
       channel: 'first',
-      reason: 'scheduled_refresh',
-      startedAt: '2026-06-14T00:00:00.000Z',
     });
 
-    expect(harness.api.sendMessage).toHaveBeenCalledWith(
-      '42',
-      '🔄 first 正在重整 Twitch 播放器',
-      undefined,
-    );
+    expect(harness.api.sendMessage.mock.calls.map(([, text]) => text)).toEqual([
+      '💥 first 觀看頁面崩潰',
+      '♻️ Firefox 瀏覽器已重啟（自動恢復）',
+      '♻️ Firefox 瀏覽器已重啟（完整回收）',
+      [
+        '🚨 容器即將重啟',
+        '原因：browser_crash_loop（channel_page_crash_loop）',
+        '來源：browser_manager',
+        '頻道：first',
+      ].join('\n'),
+    ]);
   });
 
   it('尚未啟動時 stop 不傳送誤導通知', async () => {

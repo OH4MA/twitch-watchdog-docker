@@ -274,7 +274,8 @@ Telegram chat IDs must be quoted integer strings such as `"5009748887"` or `"-10
 - `/screenshot 頻道名稱`：回傳指定觀看中頻道截圖。
 - `/help`：顯示指令說明。
 
-定時重整 Twitch 播放器時，bot 會向允許的 chat 傳送重整提醒。
+Bot 主動推播：服務啟動／停止、開台／下播、忠誠點數成功或 click 失敗、page crash、browser 重啟、容器即將重啟（致命錯誤）。定時／手動重整**不會**推播。
+Proactive bot pushes: service start/stop, stream online/offline, reward claimed or click failure, page crash, browser restart, and upcoming container restart (fatal path). Scheduled/manual player refresh does **not** push.
 
 Bot token 具有管理能力，不得提交 Git 或貼到任何公開位置。
 
@@ -341,8 +342,8 @@ Discord user IDs must be quoted numeric snowflake IDs. Direct messages are accep
 - `/screenshot channel:頻道名稱`：回傳指定觀看中頻道截圖。
 - `/help`：顯示指令說明。
 
-定時重整 Twitch 播放器時，bot 會向允許的 Discord channel 傳送重整提醒。
-When Twitch players refresh on schedule, the bot sends refresh notifications to allowed Discord channels.
+Bot 主動推播：服務啟動／停止、開台／下播、忠誠點數成功或 click 失敗、page crash、browser 重啟、容器即將重啟（致命錯誤）。定時／手動重整**不會**推播。
+Proactive bot pushes: service start/stop, stream online/offline, reward claimed or click failure, page crash, browser restart, and upcoming container restart (fatal path). Scheduled/manual player refresh does **not** push.
 
 Discord bot token 具有管理能力，不得提交 Git 或貼到任何公開位置。
 Discord bot tokens grant management capability. Do not commit them to Git or post them publicly.

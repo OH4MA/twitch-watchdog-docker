@@ -180,7 +180,12 @@ describe('DefaultDiscordBot', () => {
       channel: 'first',
       status: 'claimed',
     });
-    await harness.bot.notifyPageRefresh({ channel: 'first' });
+    await harness.bot.notifyPageCrash('first');
+    await harness.bot.notifyBrowserRestart({ mode: 'manual' });
+    await harness.bot.notifyContainerRestart({
+      reason: 'emergency_memory',
+      source: 'resource_guard',
+    });
 
     const messages = harness.api.sendMessage.mock.calls.map(
       ([channelId, content]) => `${channelId}:${content}`,
@@ -192,7 +197,17 @@ describe('DefaultDiscordBot', () => {
       '111111111111111111:🎁 first 已領取忠誠點數',
     );
     expect(messages).toContain(
-      '111111111111111111:🔄 first 正在重整 Twitch 播放器',
+      '111111111111111111:💥 first 觀看頁面崩潰',
+    );
+    expect(messages).toContain(
+      '111111111111111111:♻️ Firefox 瀏覽器已重啟（完整回收）',
+    );
+    expect(messages).toContain(
+      [
+        '111111111111111111:🚨 容器即將重啟',
+        '原因：emergency_memory',
+        '來源：resource_guard',
+      ].join('\n'),
     );
   });
 });

@@ -117,4 +117,60 @@ describe('ContainerRestartController', () => {
       channel: 'ok',
     });
   });
+
+  it('exit 前會 best-effort 呼叫 onNotify，且 notify 逾時仍會 exit', async () => {
+    vi.useFakeTimers();
+    const error = vi.fn();
+    const flush = vi.fn(async () => undefined);
+    const exit = vi.fn();
+    const onNotify = vi.fn(
+      () => new Promise<void>(() => undefined),
+    );
+    const controller = new ContainerRestartController({
+      logger: { error, flush },
+      exit,
+      onNotify,
+      notifyTimeoutMs: 50,
+      flushTimeoutMs: 50,
+    });
+
+    const requestPromise = controller.request({
+      reason: 'browser_crash_loop',
+      source: 'browser_manager',
+      fields: { channel: 'first' },
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    await vi.advanceTimersByTimeAsync(50);
+    await requestPromise;
+
+    expect(onNotify).toHaveBeenCalledOnce();
+    expect(onNotify).toHaveBeenCalledWith({
+      reason: 'browser_crash_loop',
+      source: 'browser_manager',
+      fields: { channel: 'first' },
+    });
+    expect(flush).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('onNotify 失敗仍會 flush 並 exit', async () => {
+    const error = vi.fn();
+    const flush = vi.fn(async () => undefined);
+    const exit = vi.fn();
+    const controller = new ContainerRestartController({
+      logger: { error, flush },
+      exit,
+      onNotify: async () => {
+        throw new Error('notify failed');
+      },
+    });
+
+    await controller.request({
+      reason: 'scheduler_stall',
+      source: 'scheduler_stall_watchdog',
+    });
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith(1);
+  });
 });
