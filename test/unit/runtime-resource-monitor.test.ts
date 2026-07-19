@@ -19,6 +19,17 @@ function createLogger() {
   };
 }
 
+function deferred(): {
+  readonly promise: Promise<void>;
+  readonly resolve: () => void;
+} {
+  let resolvePromise = (): void => undefined;
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
+
 describe('RuntimeResourceMonitor', () => {
   it('啟動時立即記錄 process 欄位，停止後不再排程', async () => {
     vi.useFakeTimers();
@@ -122,6 +133,69 @@ describe('RuntimeResourceMonitor', () => {
       expect.objectContaining({ reason: 'sustained_high_memory' }),
     );
 
+    await monitor.stop();
+  });
+
+  it('browser recycle 進行中仍會偵測 cgroup OOM 並要求重啟容器', async () => {
+    vi.useFakeTimers();
+    const logger = createLogger();
+    const restartGate = deferred();
+    const restart = vi.fn(() => restartGate.promise);
+    const onContainerRestartRequested = vi.fn(async () => undefined);
+    let sampleIndex = 0;
+    const samples = [
+      {
+        sampledAtMonotonicMs: 0,
+        memoryCurrentBytes: mibToBytes(4_700),
+        events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
+      },
+      {
+        sampledAtMonotonicMs: 2_000,
+        memoryCurrentBytes: mibToBytes(4_700),
+        events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
+      },
+      {
+        sampledAtMonotonicMs: 4_000,
+        memoryCurrentBytes: mibToBytes(4_700),
+        events: { high: 0n, max: 0n, oom: 1n, oomKill: 0n },
+      },
+    ];
+    const readNextSnapshot = async () => {
+      const current = samples[Math.min(sampleIndex, samples.length - 1)]!;
+      sampleIndex += 1;
+      return current;
+    };
+    const monitor = new RuntimeResourceMonitor({
+      browserManager: { getPageCount: () => 1, restart },
+      sessionManager: { getActiveChannels: () => ['one'] },
+      logger,
+      intervalSeconds: 60,
+      resourceGuard: createDefaultResourceGuard(3, {
+        scaleWithStreams: false,
+      }),
+      now: () => samples[Math.min(sampleIndex, samples.length - 1)]!
+        .sampledAtMonotonicMs,
+      onContainerRestartRequested,
+      cgroupReader: {
+        probe: async () => ({ available: true, rootPath: '/sys/fs/cgroup' }),
+        readSnapshot: readNextSnapshot,
+        readPolicySnapshot: readNextSnapshot,
+      } as unknown as CgroupV2Reader,
+    });
+
+    await monitor.start();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(restart).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(onContainerRestartRequested).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'cgroup_oom',
+        source: 'resource_guard',
+      }),
+    );
+
+    restartGate.resolve();
     await monitor.stop();
   });
 

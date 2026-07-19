@@ -53,6 +53,7 @@ const DEFAULT_HEALTH_FAILURE_THRESHOLD = 3;
 const MAX_TIMER_JITTER_MS = 5_000;
 const MAX_PAGE_REFRESH_JITTER_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
+const DEFAULT_PAGE_OPERATION_DRAIN_TIMEOUT_MS = 5_000;
 export const REWARD_FAILURE_RECOVERY_THRESHOLD = 10;
 
 export type ChannelSessionState =
@@ -67,6 +68,7 @@ export interface ChannelSession {
   readonly channel: string;
   readonly state: ChannelSessionState;
   start(): Promise<void>;
+  cancelStart?(reason: string): Promise<void>;
   stop(reason: string): Promise<void>;
   checkHealth(): Promise<ChannelHealthResult>;
   tickRewardClaim(): Promise<RewardClaimResult>;
@@ -139,6 +141,7 @@ export interface DefaultChannelSessionOptions {
   readonly onInvalidated?: ChannelSessionInvalidationObserver;
   readonly onPageRefresh?: ChannelSessionRefreshObserver;
   readonly onContainerRestartRequested?: ContainerRestartRequestObserver;
+  readonly pageOperationDrainTimeoutMs?: number;
   readonly now?: () => Date;
 }
 
@@ -153,6 +156,7 @@ export interface DefaultChannelSessionFactoryOptions {
   readonly onInvalidated?: ChannelSessionInvalidationObserver;
   readonly onPageRefresh?: ChannelSessionRefreshObserver;
   readonly onContainerRestartRequested?: ContainerRestartRequestObserver;
+  readonly pageOperationDrainTimeoutMs?: number;
   readonly now?: () => Date;
 }
 
@@ -195,6 +199,7 @@ export class DefaultChannelSession implements ChannelSession {
   private readonly onContainerRestartRequested:
     | ContainerRestartRequestObserver
     | undefined;
+  private readonly pageOperationDrainTimeoutMs: number;
   private readonly now: () => Date;
 
   private currentState: ChannelSessionState = 'stopped';
@@ -214,6 +219,7 @@ export class DefaultChannelSession implements ChannelSession {
   private nextPageRefreshAtMs: number | undefined;
   private lifecycleTail: Promise<void> = Promise.resolve();
   private pageOperationTail: Promise<void> = Promise.resolve();
+  private startCancellationReason: string | undefined;
 
   public constructor(
     private readonly options: DefaultChannelSessionOptions,
@@ -240,6 +246,10 @@ export class DefaultChannelSession implements ChannelSession {
     this.onPageRefresh = options.onPageRefresh;
     this.onContainerRestartRequested =
       options.onContainerRestartRequested;
+    this.pageOperationDrainTimeoutMs = positiveInteger(
+      options.pageOperationDrainTimeoutMs,
+      DEFAULT_PAGE_OPERATION_DRAIN_TIMEOUT_MS,
+    );
     this.now = options.now ?? (() => new Date());
   }
 
@@ -259,22 +269,28 @@ export class DefaultChannelSession implements ChannelSession {
       }
 
       this.currentState = 'starting';
+      this.startCancellationReason = undefined;
       this.consecutiveHealthFailures = 0;
       this.resetRewardFailureRecovery();
 
       try {
         const page = await this.browserManager.createPage(this.channel);
         this.page = page;
+        this.throwIfStartCancelled();
         page.setDefaultNavigationTimeout(
           this.options.config.browser.navigationTimeoutMs,
         );
         await page.goto(this.targetUrl, { waitUntil: 'domcontentloaded' });
+        this.throwIfStartCancelled();
         if (!isExpectedChannelUrl(page.url(), this.targetUrl)) {
           throw new Error('頻道頁面導向非預期 Twitch URL');
         }
         await this.acceptContentWarningIfPresent(page, 'start');
+        this.throwIfStartCancelled();
         await this.collapseSideNavIfExpanded(page, 'start');
+        this.throwIfStartCancelled();
         await this.optimizePlayback(page);
+        this.throwIfStartCancelled();
 
         this.currentState = 'watching';
         this.startTimers();
@@ -296,6 +312,17 @@ export class DefaultChannelSession implements ChannelSession {
     });
   }
 
+  public async cancelStart(reason: string): Promise<void> {
+    if (this.currentState !== 'starting') {
+      return;
+    }
+
+    this.startCancellationReason = reason;
+    this.clearTimers();
+    this.page = undefined;
+    await this.closePageForCleanup('start_cancelled');
+  }
+
   public stop(reason: string): Promise<void> {
     return this.runLifecycle(async () => {
       if (
@@ -307,6 +334,19 @@ export class DefaultChannelSession implements ChannelSession {
 
       this.currentState = 'stopping';
       this.clearTimers();
+      const pageOperationsDrained = await this.drainPageOperations();
+      if (!pageOperationsDrained) {
+        safeLog(
+          this.logger,
+          'warn',
+          'session_page_operation_drain_timeout',
+          {
+            channel: this.channel,
+            reason,
+            timeoutMs: this.pageOperationDrainTimeoutMs,
+          },
+        );
+      }
       this.page = undefined;
 
       try {
@@ -320,6 +360,7 @@ export class DefaultChannelSession implements ChannelSession {
       }
 
       this.currentState = 'stopped';
+      this.startCancellationReason = undefined;
       this.consecutiveHealthFailures = 0;
       this.resetRewardFailureRecovery();
       safeLog(this.logger, 'info', LOG_EVENTS.WATCH_STOPPED, {
@@ -381,22 +422,23 @@ export class DefaultChannelSession implements ChannelSession {
     return flight;
   }
 
-  public async captureScreenshot(): Promise<Buffer> {
-    const page = this.page;
-    if (
-      page === undefined ||
-      page.isClosed() ||
-      (this.currentState !== 'watching' &&
-        this.currentState !== 'recovering')
-    ) {
-      throw new Error('頻道頁面目前無法截圖');
-    }
+  public captureScreenshot(): Promise<Buffer> {
+    return this.runPageOperation('screenshot', async () => {
+      const page = this.page;
+      if (
+        page === undefined ||
+        page.isClosed() ||
+        !this.shouldScheduleWork()
+      ) {
+        throw new Error('頻道頁面目前無法截圖');
+      }
 
-    const screenshot = await page.screenshot({
-      type: 'png',
-      fullPage: false,
+      const screenshot = await page.screenshot({
+        type: 'png',
+        fullPage: false,
+      });
+      return Buffer.from(screenshot);
     });
-    return Buffer.from(screenshot);
   }
 
   public getChannelPoints(): Promise<ChannelSessionPointsResult> {
@@ -479,7 +521,11 @@ export class DefaultChannelSession implements ChannelSession {
 
   private async runHealthCheck(): Promise<ChannelHealthResult> {
     const page = this.page;
-    if (page === undefined) {
+    if (
+      page === undefined ||
+      page.isClosed() ||
+      !this.shouldScheduleWork()
+    ) {
       this.logMaintenanceSkipped('health', 'page_missing');
       return {
         healthy: false,
@@ -1015,6 +1061,37 @@ export class DefaultChannelSession implements ChannelSession {
       intervalMs +
         stableJitter(`${this.channel}:page-refresh`, refreshJitterMs),
     );
+  }
+
+  private throwIfStartCancelled(): void {
+    if (this.startCancellationReason !== undefined) {
+      throw new Error(
+        `Session start cancelled: ${this.startCancellationReason}`,
+      );
+    }
+  }
+
+  private async drainPageOperations(): Promise<boolean> {
+    const operations = this.pageOperationTail.catch(() => undefined);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<false>((resolve) => {
+      timeoutHandle = setTimeout(
+        () => resolve(false),
+        this.pageOperationDrainTimeoutMs,
+      );
+      timeoutHandle.unref?.();
+    });
+
+    try {
+      return await Promise.race([
+        operations.then(() => true as const),
+        timeout,
+      ]);
+    } finally {
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 
   private shouldScheduleWork(): boolean {

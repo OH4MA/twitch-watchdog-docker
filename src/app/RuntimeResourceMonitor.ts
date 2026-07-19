@@ -48,7 +48,7 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
   private cgroupAvailable: boolean | undefined;
   private cgroupUnavailableLogged = false;
   private thresholdsClampedLogged = false;
-  private recycleInFlight = false;
+  private recycleFlight: Promise<void> | undefined;
   private lastTelemetryAtMs = 0;
   private resourceGuardState:
     | 'disabled'
@@ -108,6 +108,13 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
         await this.sampleFlight;
       } catch {
         // Ignore in-flight sample errors during shutdown.
+      }
+    }
+    if (this.recycleFlight !== undefined) {
+      try {
+        await this.recycleFlight;
+      } catch {
+        // Ignore in-flight recycle errors during shutdown.
       }
     }
   }
@@ -179,17 +186,10 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       this.maybeClampThresholds(cgroup);
     }
 
-    if (cgroup !== undefined && this.policy !== undefined && !this.recycleInFlight) {
-      const decision = this.policy.evaluate(cgroup);
-      await this.applyDecision(decision, cgroup);
-    } else if (
-      cgroup !== undefined &&
-      this.policy !== undefined &&
-      this.recycleInFlight &&
-      this.policy.isRecycleObservationActive()
-    ) {
-      // Continue post-recycle observation while recycleInFlight is clearing.
-      const decision = this.policy.evaluate(cgroup);
+    if (cgroup !== undefined && this.policy !== undefined) {
+      const decision = this.recycleFlight === undefined
+        ? this.policy.evaluate(cgroup)
+        : this.policy.evaluateEmergencyOnly(cgroup);
       await this.applyDecision(decision, cgroup);
     }
 
@@ -304,7 +304,7 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
         return;
       }
       case 'recycle_browser':
-        await this.recycleBrowser(decision.reason, snapshot);
+        this.startBrowserRecycle(decision.reason, snapshot);
         return;
       case 'restart_container':
         await this.requestContainerRestart(decision.reason, snapshot);
@@ -316,14 +316,26 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
     }
   }
 
+  private startBrowserRecycle(
+    reason: string,
+    snapshot: CgroupSnapshot,
+  ): void {
+    if (this.recycleFlight !== undefined) {
+      return;
+    }
+
+    const flight = this.recycleBrowser(reason, snapshot).finally(() => {
+      if (this.recycleFlight === flight) {
+        this.recycleFlight = undefined;
+      }
+    });
+    this.recycleFlight = flight;
+  }
+
   private async recycleBrowser(
     reason: string,
     snapshot: CgroupSnapshot,
   ): Promise<void> {
-    if (this.recycleInFlight) {
-      return;
-    }
-    this.recycleInFlight = true;
     this.resourceGuardState = 'recycling';
     const memoryBeforeBytes = snapshot.memoryCurrentBytes;
     this.options.logger.warn('resource_guard_browser_recycle_requested', {
@@ -334,8 +346,10 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
 
     try {
       await this.options.browserManager.restart();
-      this.policy?.beginRecycleObservation(memoryBeforeBytes);
-      this.resourceGuardState = 'observing';
+      if (!this.isContainerRestarting()) {
+        this.policy?.beginRecycleObservation(memoryBeforeBytes);
+        this.resourceGuardState = 'observing';
+      }
       this.options.logger.info('resource_guard_browser_recycle_completed', {
         reason,
         memoryBeforeBytes: serializableByteCount(memoryBeforeBytes),
@@ -348,8 +362,6 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       await this.requestContainerRestart('browser_recycle_failed', snapshot, {
         recycleReason: reason,
       });
-    } finally {
-      this.recycleInFlight = false;
     }
   }
 
@@ -389,6 +401,10 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
     }
   }
 
+  private isContainerRestarting(): boolean {
+    return this.resourceGuardState === 'restarting';
+  }
+
   private recordSnapshot(cgroup: CgroupSnapshot | undefined): void {
     const memory = process.memoryUsage();
     const cpu = process.cpuUsage();
@@ -420,7 +436,7 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       cgroupMemoryEventsOom: serializableByteCount(events?.oom),
       cgroupMemoryEventsOomKill: serializableByteCount(events?.oomKill),
       resourceGuardState: this.resourceGuardState,
-      browserRecycleInFlight: this.recycleInFlight,
+      browserRecycleInFlight: this.recycleFlight !== undefined,
     });
   }
 }

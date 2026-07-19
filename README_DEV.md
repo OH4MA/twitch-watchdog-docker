@@ -126,6 +126,8 @@ Session startup events:
   A session start hit a just-closed browser/page or Twitch page navigation timeout, so the manager waits briefly and retries once.
 - `session_start_failed`：session 啟動最終失敗；該頻道不會留在 active registry，其他頻道會繼續處理。
   Session startup ultimately failed; that channel is not kept in the active registry, and other channels continue processing.
+- `session_start_timeout`：逾時後會呼叫 session 的取消啟動路徑，立即要求 BrowserManager 關閉已建立的 page，再執行一般失敗清理。
+  After a startup timeout, the manager invokes the session cancellation path, immediately asks BrowserManager to close any created page, and then performs normal failed-start cleanup.
 
 容器資源：
 
@@ -184,8 +186,8 @@ Important events:
   Cgroup metrics unavailable, or scaled thresholds clamped under `memory.max`.
 - `runtime_resource_snapshot`：同時包含 Node process 欄位，以及 cgroup 記憶體、CPU 累計時間與程序數欄位（例如 `cgroupMemoryCurrentBytes`、`cgroupCpuUsageUsec`、`cgroupPidsCurrent`）。
   Includes Node process fields plus cgroup memory, cumulative CPU-time, and process-count fields (for example, `cgroupMemoryCurrentBytes`, `cgroupCpuUsageUsec`, and `cgroupPidsCurrent`).
-- `session_maintenance_completed` / `session_maintenance_skipped`：健康檢查、獎勵領取、畫質維持與頁面重整的排隊時間、執行時間、結果或略過原因。同一頁面的維護操作會依序執行，避免 Playwright DOM 操作互相競爭。
-  Reports queue time, execution time, outcome, or skip reason for health checks, reward claims, quality enforcement, and reloads. Maintenance operations on the same page run sequentially to avoid competing Playwright DOM actions.
+- `session_maintenance_completed` / `session_maintenance_skipped`：健康檢查、獎勵領取、點數讀取、截圖、畫質維持與頁面重整的排隊時間、執行時間、結果或略過原因。同一頁面的操作會依序執行；停止 session 時最多等待 queue 5 秒，逾時記錄 `session_page_operation_drain_timeout` 後強制關閉 page。
+  Reports queue time, execution time, outcome, or skip reason for health checks, reward claims, point reads, screenshots, quality enforcement, and reloads. Operations on the same page run sequentially; session shutdown drains the queue for up to five seconds, then logs `session_page_operation_drain_timeout` and force-closes the page.
 - `side_nav_collapsed` / `side_nav_collapse_skipped`：啟動或 reload 後的 Twitch 左側欄收合結果；找不到按鈕或側欄已收合時不會輸出失敗事件。
   Reports Twitch sidebar collapse outcomes after startup or reload. A missing toggle or an already-collapsed sidebar is not treated as a failure.
 
@@ -194,6 +196,9 @@ Important events:
 
 啟用 resource guard 時，高頻政策採樣只讀 `memory.current`、`memory.events` 與 `memory.swap.current`；啟動及 `resource_telemetry_interval_seconds` 週期才讀取包含 `memory.max`、`memory.peak`、`pids.current` 與 `cpu.stat` 的完整 snapshot。預設 2 秒 guard、60 秒 telemetry 下，cgroup metric 讀檔量約由每分鐘 210 次降至 94 次，同時維持原有政策決策頻率。
 When the resource guard is enabled, high-frequency policy samples read only `memory.current`, `memory.events`, and `memory.swap.current`. Startup and `resource_telemetry_interval_seconds` intervals use full snapshots that also include `memory.max`, `memory.peak`, `pids.current`, and `cpu.stat`. With the default 2-second guard and 60-second telemetry cadence, cgroup metric reads drop from approximately 210 to 94 per minute while preserving the existing policy decision frequency.
+
+Browser recycle 不會阻塞下一次 guard 採樣。Recycle 進行中只評估 emergency memory、emergency swap 與 cgroup OOM/max event；一般 warning、recycle 與 fast-growth 判斷暫停，避免 browser/session refill 造成誤判。
+Browser recycle does not block subsequent guard samples. While recycle is in flight, only emergency memory, emergency swap, and cgroup OOM/max events are evaluated; ordinary warning, recycle, and fast-growth decisions pause to avoid browser/session refill false positives.
 
 健康狀態與獎勵候選會以批次 DOM snapshot 讀取；播放器解析度已符合設定時不再開啟 Twitch 畫質選單。這些最佳化不改變既有設定或對外介面。
 Health state and reward candidates are read through batched DOM snapshots. When the active video resolution already matches the configured quality, the Twitch quality menu is not opened. These optimizations do not change existing configuration or public interfaces.

@@ -54,6 +54,10 @@ export class RecordingChannelSession implements ChannelSession {
     });
   }
 
+  public async cancelStart(): Promise<void> {
+    this.currentState = 'failed';
+  }
+
   public async stop(reason: string): Promise<void> {
     this.currentState = 'stopping';
     await this.hooks.onStop?.(this, reason);

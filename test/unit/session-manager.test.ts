@@ -16,6 +16,7 @@ function createSession(
   channel: string,
   options: {
     readonly onStart?: () => Promise<void>;
+    readonly onCancelStart?: (reason: string) => Promise<void>;
     readonly onStop?: (reason: string) => Promise<void>;
     readonly screenshot?: Buffer;
     readonly channelPoints?: ChannelSessionPointsResult;
@@ -31,6 +32,9 @@ function createSession(
     channel,
     secret: `session-secret-${channel}`,
     start: vi.fn(options.onStart ?? (async () => undefined)),
+    cancelStart: vi.fn(
+      options.onCancelStart ?? (async () => undefined),
+    ),
     stop: vi.fn(options.onStop ?? (async () => undefined)),
     checkHealth: vi.fn(async () => ({ healthy: true, reason: 'live' })),
     tickRewardClaim: vi.fn(async () => ({
@@ -284,9 +288,19 @@ describe('DefaultSessionManager', () => {
   it('session start 卡住時會 timeout 並繼續啟動後續頻道', async () => {
     vi.useFakeTimers();
     try {
+      const startGate = createGate();
+      const lifecycleEvents: string[] = [];
       const stuck = createSession('stuck', {
         onStart: async () => {
-          await new Promise(() => undefined);
+          await startGate.promise;
+          lifecycleEvents.push('late_start_completed');
+        },
+        onCancelStart: async (reason) => {
+          lifecycleEvents.push(`cancel:${reason}`);
+          startGate.release();
+        },
+        onStop: async (reason) => {
+          lifecycleEvents.push(`stop:${reason}`);
         },
       });
       const healthy = createSession('healthy');
@@ -310,6 +324,13 @@ describe('DefaultSessionManager', () => {
 
       expect(manager.getActiveChannels()).toEqual(['healthy']);
       expect(healthy.start).toHaveBeenCalledOnce();
+      expect(stuck.cancelStart).toHaveBeenCalledWith('start_timeout');
+      expect(stuck.stop).toHaveBeenCalledWith('start_failed');
+      expect(lifecycleEvents).toEqual([
+        'cancel:start_timeout',
+        'late_start_completed',
+        'stop:start_failed',
+      ]);
       expect(logger.warn).toHaveBeenCalledWith(
         'session_start_timeout',
         {

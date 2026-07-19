@@ -109,6 +109,7 @@ function createMockPage(input: {
   readonly marker?: HealthMarker;
   readonly url?: string;
   readonly gotoError?: Error;
+  readonly gotoImplementation?: () => Promise<null>;
   readonly finalUrl?: string;
   readonly reloadError?: Error;
   readonly reloadImplementation?: () => Promise<null>;
@@ -181,6 +182,9 @@ function createMockPage(input: {
 
   const setDefaultNavigationTimeout = vi.fn();
   const goto = vi.fn(async (url: string): Promise<null> => {
+    if (input.gotoImplementation !== undefined) {
+      await input.gotoImplementation();
+    }
     if (input.gotoError !== undefined) {
       throw input.gotoError;
     }
@@ -376,6 +380,35 @@ describe('DefaultChannelSession', () => {
     expect(session.state).toBe('failed');
   });
 
+  it('取消進行中的 start 會立即要求關閉 page 並阻止 late success', async () => {
+    const navigation = deferred<null>();
+    const mockPage = createMockPage({
+      gotoImplementation: () => navigation.promise,
+    });
+    const browser = createBrowserManager(mockPage.page);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+    });
+
+    const startPromise = session.start();
+    await vi.waitFor(() => {
+      expect(mockPage.goto).toHaveBeenCalledOnce();
+    });
+
+    await session.cancelStart('start_timeout');
+    expect(browser.closePage).toHaveBeenCalledWith(CHANNEL);
+
+    navigation.resolve(null);
+    await expect(startPromise).rejects.toThrow(
+      'Session start cancelled: start_timeout',
+    );
+    expect(session.state).toBe('failed');
+    expect(browser.closePage).toHaveBeenCalledTimes(2);
+  });
+
   it('start 導向非預期 origin 時立即關閉 page 且不啟動 session', async () => {
     const mockPage = createMockPage({
       finalUrl: 'https://example.test/fake-channel',
@@ -547,6 +580,38 @@ describe('DefaultChannelSession', () => {
     await expect(session.captureScreenshot()).rejects.toThrow(
       '頻道頁面目前無法截圖',
     );
+  });
+
+  it('captureScreenshot 會排在既有 page operation 後方', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const health = deferred<ChannelHealthResult>();
+    const healthEvaluator = vi.fn(() => health.promise);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+      healthEvaluator,
+    });
+    await session.start();
+
+    const healthPromise = session.checkHealth();
+    await vi.waitFor(() => {
+      expect(healthEvaluator).toHaveBeenCalledOnce();
+    });
+    const screenshotPromise = session.captureScreenshot();
+    await Promise.resolve();
+    expect(mockPage.screenshot).not.toHaveBeenCalled();
+
+    health.resolve({ healthy: true, reason: 'live' });
+    await healthPromise;
+    await expect(screenshotPromise).resolves.toEqual(
+      Buffer.from('png-image'),
+    );
+    expect(mockPage.screenshot).toHaveBeenCalledOnce();
+
+    await session.stop('test_complete');
   });
 
   it('觀看中可讀取忠誠點數，停止後回報 page_unavailable', async () => {
@@ -980,15 +1045,17 @@ describe('DefaultChannelSession', () => {
       expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
     });
 
-    await expect(session.stop('shutdown')).resolves.toBeUndefined();
-    expect(browser.closePage).toHaveBeenCalledOnce();
+    const stopPromise = session.stop('shutdown');
+    await Promise.resolve();
+    expect(browser.closePage).not.toHaveBeenCalled();
 
     reward.resolve({
       status: 'not_found',
       channel: CHANNEL,
       checkedAt: NOW.toISOString(),
     });
-    await Promise.resolve();
+    await expect(stopPromise).resolves.toBeUndefined();
+    expect(browser.closePage).toHaveBeenCalledOnce();
 
     vi.advanceTimersByTime(5_000);
     await Promise.resolve();
@@ -1126,7 +1193,7 @@ describe('DefaultChannelSession', () => {
     await session.stop('test_complete');
   });
 
-  it('stop 不會被進行中的定時刷新卡住', async () => {
+  it('stop 等待 page operation 超時後會強制關閉 page', async () => {
     vi.useFakeTimers();
     const reload = deferred<null>();
     const mockPage = createMockPage({
@@ -1141,6 +1208,7 @@ describe('DefaultChannelSession', () => {
       }),
       browserManager: browser.manager,
       rewardClaimer: createRewardClaimer().claimer,
+      pageOperationDrainTimeoutMs: 1_000,
     });
     await session.start();
 
@@ -1151,6 +1219,11 @@ describe('DefaultChannelSession', () => {
 
     const stopPromise = session.stop('shutdown');
     await Promise.resolve();
+    expect(browser.closePage).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(browser.closePage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     await expect(stopPromise).resolves.toBeUndefined();
     expect(browser.closePage).toHaveBeenCalledOnce();
     expect(session.state).toBe('stopped');

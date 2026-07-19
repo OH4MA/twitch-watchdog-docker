@@ -143,8 +143,21 @@ export class ResourceGuardPolicy {
     return { action: 'none' };
   }
 
+  /**
+   * Browser recycle 期間僅評估不可延後的致命訊號，避免 refill 觸發一般門檻。
+   */
+  public evaluateEmergencyOnly(
+    snapshot: CgroupSnapshot,
+  ): ResourceGuardDecision {
+    const nowMs = snapshot.sampledAtMonotonicMs;
+    this.startedAtMs ??= nowMs;
+    this.pushSample(snapshot);
+    return this.evaluateEmergency(snapshot, false) ?? { action: 'none' };
+  }
+
   private evaluateEmergency(
     snapshot: CgroupSnapshot,
+    includeFastGrowth = true,
   ): ResourceGuardDecision | undefined {
     // Always advance event counters first so deltas stay accurate.
     const eventEmergency = this.evaluateEventDeltas(snapshot);
@@ -173,7 +186,7 @@ export class ResourceGuardPolicy {
       return eventEmergency;
     }
 
-    if (this.shouldIgnoreFastGrowth(snapshot)) {
+    if (!includeFastGrowth || this.shouldIgnoreFastGrowth(snapshot)) {
       return undefined;
     }
 

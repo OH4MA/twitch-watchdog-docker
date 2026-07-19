@@ -81,6 +81,16 @@ const DEFAULT_START_RETRY_DELAY_MS = 0;
 const DEFAULT_START_STAGGER_MS = 0;
 const DEFAULT_SESSION_OPERATION_TIMEOUT_MS = 60_000;
 
+class SessionOperationTimeoutError extends Error {
+  public constructor(
+    public readonly event: string,
+    timeoutMs: number,
+  ) {
+    super(`${event} after ${timeoutMs}ms`);
+    this.name = 'SessionOperationTimeoutError';
+  }
+}
+
 export class DefaultSessionManager implements SessionManager {
   private readonly sessions = new Map<string, ChannelSession>();
   private readonly logger: SessionManagerLogger;
@@ -328,6 +338,12 @@ export class DefaultSessionManager implements SessionManager {
         const safeError = safeErrorMessage(error);
 
         if (session !== undefined) {
+          if (
+            error instanceof SessionOperationTimeoutError &&
+            error.event === 'session_start_timeout'
+          ) {
+            await this.cancelTimedOutStart(session, channel);
+          }
           await this.cleanupFailedStart(session, channel);
         }
 
@@ -354,6 +370,28 @@ export class DefaultSessionManager implements SessionManager {
           await this.sleep(this.startRetryDelayMs);
         }
       }
+    }
+  }
+
+  private async cancelTimedOutStart(
+    session: ChannelSession,
+    channel: string,
+  ): Promise<void> {
+    if (session.cancelStart === undefined) {
+      return;
+    }
+
+    try {
+      await this.withSessionOperationTimeout(
+        session.cancelStart('start_timeout'),
+        'session_start_cancel_timeout',
+        { channel },
+      );
+    } catch (error: unknown) {
+      this.safeLog('warn', 'session_start_cancel_failed', {
+        channel,
+        error: safeErrorMessage(error),
+      });
     }
   }
 
@@ -399,8 +437,9 @@ export class DefaultSessionManager implements SessionManager {
           timeoutMs: this.sessionOperationTimeoutMs,
         });
         reject(
-          new Error(
-            `${timeoutEvent} after ${this.sessionOperationTimeoutMs}ms`,
+          new SessionOperationTimeoutError(
+            timeoutEvent,
+            this.sessionOperationTimeoutMs,
           ),
         );
       }, this.sessionOperationTimeoutMs);

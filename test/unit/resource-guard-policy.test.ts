@@ -141,6 +141,25 @@ describe('ResourceGuardPolicy', () => {
     });
   });
 
+  it('emergency-only 模式略過 recycle/warning，但仍偵測 OOM', () => {
+    const policy = createPolicy();
+    policy.evaluate(snapshot({ atMs: 0, memoryMib: 4_700, oom: 0n }));
+
+    expect(
+      policy.evaluateEmergencyOnly(
+        snapshot({ atMs: 2_000, memoryMib: 4_700, oom: 0n }),
+      ),
+    ).toEqual({ action: 'none' });
+    expect(
+      policy.evaluateEmergencyOnly(
+        snapshot({ atMs: 4_000, memoryMib: 4_700, oom: 1n }),
+      ),
+    ).toEqual({
+      action: 'restart_container',
+      reason: 'cgroup_oom',
+    });
+  });
+
   it('啟動 grace 期間忽略 fast growth，之後在 warning 以上才觸發', () => {
     let now = 0;
     const policy = createPolicy(() => now);
