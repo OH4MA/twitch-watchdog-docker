@@ -116,6 +116,9 @@ Reward claim recovery events:
 - `scheduler_stall_detected`：排程檢查長時間停留在 in-flight，容器級 watchdog 會 flush log 後以非 0 狀態結束程序，交由 Docker restart policy 重啟容器。
   A scheduler check remained in flight past the watchdog threshold, so the service flushes logs and exits non-zero for Docker restart policy recovery.
 
+`/points` 只讀取既有 active session 的 `[data-test-selector="community-points-summary"]`，不會開啟額外 Twitch 頁面。點數讀取會進入同一 Page 的 maintenance queue，避免與健康檢查、獎勵領取、畫質調整或 reload 競爭。
+`/points` reads `[data-test-selector="community-points-summary"]` only from existing active sessions and does not open additional Twitch pages. Balance reads enter the same per-Page maintenance queue to avoid competing with health checks, reward claims, quality enforcement, or reloads.
+
 Session 啟動相關事件：
 Session startup events:
 

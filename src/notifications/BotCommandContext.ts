@@ -2,6 +2,7 @@ import type { RuntimeWatchConfig } from '../config/index.js';
 import type { WatchdogSchedulerSnapshot } from '../scheduler/index.js';
 import type {
   ChannelSessionRefreshStatus,
+  SessionChannelPointsResult,
   SessionRefreshResult,
   SessionScreenshot,
 } from '../sessions/index.js';
@@ -15,6 +16,9 @@ export interface BotCommandContext {
   getRefreshStatuses(): readonly ChannelSessionRefreshStatus[];
   refreshPages(channel?: string): Promise<readonly SessionRefreshResult[]>;
   captureScreenshot(channel?: string): Promise<SessionScreenshot | undefined>;
+  getChannelPoints(
+    channel?: string,
+  ): Promise<readonly SessionChannelPointsResult[]>;
   getConfig(): RuntimeWatchConfig;
   setChannels(channels: readonly string[]): Promise<RuntimeWatchConfig>;
   setMaxConcurrentStreams(value: number): Promise<RuntimeWatchConfig>;

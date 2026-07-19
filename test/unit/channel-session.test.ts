@@ -2,6 +2,7 @@ import type { Locator, Page } from 'playwright';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { BrowserManager } from '../../src/browser/BrowserManager.js';
+import { COMMUNITY_POINTS_BALANCE_SELECTOR } from '../../src/browser/ChannelPointsReader.js';
 import {
   CHANNEL_HEALTH_SELECTORS,
   DefaultChannelSession,
@@ -113,6 +114,7 @@ function createMockPage(input: {
   readonly reloadImplementation?: () => Promise<null>;
   readonly contentWarningClickError?: Error;
   readonly sideNavExpanded?: boolean;
+  readonly channelPointsBalance?: string;
 } = {}): MockPageControls {
   let marker = input.marker;
   let currentUrl = input.url ?? 'about:blank';
@@ -157,6 +159,21 @@ function createMockPage(input: {
       },
       async evaluate(): Promise<boolean> {
         return sideNavExpanded;
+      },
+      async evaluateAll(): Promise<readonly {
+        readonly visible: boolean;
+        readonly candidates: readonly string[];
+      }[]> {
+        if (
+          selector === COMMUNITY_POINTS_BALANCE_SELECTOR &&
+          input.channelPointsBalance !== undefined
+        ) {
+          return [{
+            visible: true,
+            candidates: [input.channelPointsBalance],
+          }];
+        }
+        return [];
       },
     };
     return mockLocator as unknown as Locator;
@@ -530,6 +547,39 @@ describe('DefaultChannelSession', () => {
     await expect(session.captureScreenshot()).rejects.toThrow(
       '頻道頁面目前無法截圖',
     );
+  });
+
+  it('觀看中可讀取忠誠點數，停止後回報 page_unavailable', async () => {
+    const mockPage = createMockPage({
+      marker: 'liveContent',
+      channelPointsBalance: '3,500',
+    });
+    const browser = createBrowserManager(mockPage.page);
+    const logs = createLogger();
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+      logger: logs.logger,
+    });
+    await session.start();
+
+    await expect(session.getChannelPoints()).resolves.toEqual({
+      status: 'available',
+      balance: 3_500,
+      displayValue: '3,500',
+    });
+    expect(logs.debug).toHaveBeenCalledWith(
+      'session_maintenance_completed',
+      expect.objectContaining({ task: 'points', outcome: 'completed' }),
+    );
+
+    await session.stop('test_complete');
+    await expect(session.getChannelPoints()).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'page_unavailable',
+    });
   });
 
   it.each([

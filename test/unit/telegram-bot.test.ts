@@ -200,6 +200,72 @@ describe('DefaultTelegramBot', () => {
     expect(harness.api.sendPhoto).not.toHaveBeenCalled();
   });
 
+  it('忠誠點數指令可查詢全部或指定頻道', async () => {
+    const harness = createHarness([
+      update(1, '42', '/points'),
+      update(2, '42', '/points SECOND'),
+    ]);
+    vi.mocked(harness.sessionManager.getChannelPoints)
+      .mockResolvedValueOnce([
+        {
+          channel: 'first',
+          status: 'available',
+          balance: 1_234_567,
+          displayValue: '1.23M',
+        },
+        {
+          channel: 'second',
+          status: 'unavailable',
+          reason: 'parse_failed',
+        },
+      ])
+      .mockResolvedValueOnce([{
+        channel: 'second',
+        status: 'available',
+        balance: 9_876,
+        displayValue: '9.8K',
+      }]);
+
+    await harness.bot.start();
+    await vi.waitFor(() => {
+      expect(harness.sessionManager.getChannelPoints).toHaveBeenCalledTimes(2);
+    });
+    await harness.bot.stop('test');
+
+    expect(harness.sessionManager.getChannelPoints).toHaveBeenNthCalledWith(
+      1,
+      undefined,
+    );
+    expect(harness.sessionManager.getChannelPoints).toHaveBeenNthCalledWith(
+      2,
+      'SECOND',
+    );
+    expect(harness.api.sendMessage.mock.calls.map(([, text]) => text)).toEqual(
+      expect.arrayContaining([
+        '忠誠點數：\nfirst：1,234,567 點\nsecond：無法取得',
+        '忠誠點數：\nsecond：9,876 點',
+      ]),
+    );
+    expect(harness.api.setMyCommands).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        { command: 'points', description: '顯示忠誠點數' },
+      ]),
+    );
+  });
+
+  it('沒有 active session 時忠誠點數指令回覆提示', async () => {
+    const harness = createHarness([update(1, '42', '/points')], []);
+
+    await harness.bot.start();
+    await vi.waitFor(() => {
+      expect(harness.api.sendMessage).toHaveBeenCalledWith(
+        '42',
+        '目前沒有正在觀看的頻道可查詢忠誠點數。',
+      );
+    });
+    await harness.bot.stop('test');
+  });
+
   it('未指定頻道時回傳所有 active session 截圖', async () => {
     const harness = createHarness(
       [update(1, '42', '/screenshot')],
@@ -416,6 +482,19 @@ function createHarness(
         image: Buffer.from(`screenshot:${actual}`),
       };
     }),
+    getChannelPoints: vi.fn(async (channel?: string) => {
+      const selectedChannels = channel === undefined
+        ? [...activeChannels]
+        : activeChannels.filter(
+          (active) => active.toLowerCase() === channel.toLowerCase(),
+        );
+      return selectedChannels.map((active) => ({
+        channel: active,
+        status: 'available' as const,
+        balance: 1_000,
+        displayValue: '1K',
+      }));
+    }),
   } satisfies SessionManager;
   const logger = {
     debug: vi.fn(),
@@ -433,6 +512,7 @@ function createHarness(
     getRefreshStatuses: () => sessionManager.getRefreshStatuses(),
     refreshPages: (channel) => sessionManager.refreshPages(channel),
     captureScreenshot: (channel) => sessionManager.captureScreenshot(channel),
+    getChannelPoints: (channel) => sessionManager.getChannelPoints(channel),
     getConfig: () => runtimeConfigManager.getConfig(),
     setChannels: (channels) => runtimeConfigManager.setChannels(channels),
     setMaxConcurrentStreams: (value) =>

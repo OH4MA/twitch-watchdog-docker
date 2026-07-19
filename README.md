@@ -19,8 +19,8 @@ Twitch Watchdog 是可用 Docker 長時間執行的 Twitch 觀看輔助服務。
 - 排程檢查若長時間卡在執行中，容器級 watchdog 會記錄 `scheduler_stall_detected` 並結束程序，交由 Docker restart policy 重啟容器。
   If scheduler checks remain in flight for too long, the container-level watchdog logs `scheduler_stall_detected` and exits so Docker restart policy restarts the container.
 - 預設將直播畫質維持在 `160p` 並靜音，降低長時間執行資源用量。
-- 可選用 Telegram Bot 或 Discord Bot 查詢狀態、管理頻道、暫停/恢復排程與取得截圖。
-  Optional Telegram Bot or Discord Bot integrations can query status, manage channels, pause/resume checks, and capture screenshots.
+- 可選用 Telegram Bot 或 Discord Bot 查詢狀態與忠誠點數、管理頻道、暫停/恢復排程及取得截圖。
+  Optional Telegram Bot or Discord Bot integrations can query status and channel-point balances, manage channels, pause/resume checks, and capture screenshots.
 
 不支援 Twitch Drops 自動領取、自動輸入帳號密碼、多帳號批量管理、CAPTCHA 繞過、反偵測或規避平台限制。
 Accepting Twitch content warnings only clicks the visible confirmation for the logged-in account; it does not bypass login, age gates, CAPTCHA, or platform restrictions.
@@ -264,6 +264,10 @@ Telegram chat IDs must be quoted integer strings such as `"5009748887"` or `"-10
 - `/refresh`：顯示正在觀看頻道的播放器重整倒數。
 - `/refresh_now`：立即重整所有觀看中頻道。
 - `/refresh_now 頻道名稱`：立即重整指定觀看中頻道。
+- `/points`：顯示所有觀看中頻道的忠誠點數。
+  Shows channel-point balances for all actively watched channels.
+- `/points 頻道名稱`：顯示指定觀看中頻道的忠誠點數。
+  Shows the channel-point balance for one actively watched channel.
 - `/config`：顯示目前頻道與最大同時觀看數。
 - `/channel_add 頻道名稱`：新增監控頻道。
 - `/channel_remove 頻道名稱`：移除監控頻道。
@@ -332,6 +336,10 @@ Discord user IDs must be quoted numeric snowflake IDs. Direct messages are accep
 - `/refresh`：顯示正在觀看頻道的播放器重整倒數。
 - `/refresh_now`：立即重整所有觀看中頻道。
 - `/refresh_now channel:頻道名稱`：立即重整指定觀看中頻道。
+- `/points`：顯示所有觀看中頻道的忠誠點數。
+  Shows channel-point balances for all actively watched channels.
+- `/points channel:頻道名稱`：顯示指定觀看中頻道的忠誠點數。
+  Shows the channel-point balance for one actively watched channel.
 - `/config`：顯示目前頻道與最大同時觀看數。
 - `/channel_add channel:頻道名稱`：新增監控頻道。
 - `/channel_remove channel:頻道名稱`：移除監控頻道。

@@ -82,6 +82,13 @@ export class RecordingChannelSession implements ChannelSession {
     return Buffer.from(`screenshot:${this.channel}`);
   }
 
+  public async getChannelPoints(): Promise<{
+    readonly status: 'unavailable';
+    readonly reason: 'not_found';
+  }> {
+    return { status: 'unavailable', reason: 'not_found' };
+  }
+
   public async refreshNow(): Promise<boolean> {
     return this.currentState === 'watching';
   }

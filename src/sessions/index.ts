@@ -8,6 +8,7 @@ export type {
   SessionManagerDependencies,
   SessionManagerLogger,
   SessionManagerSleep,
+  SessionChannelPointsResult,
   SessionRefreshResult,
   SessionScreenshot,
 } from './SessionManager.js';

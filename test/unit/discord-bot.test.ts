@@ -210,6 +210,68 @@ describe('DefaultDiscordBot', () => {
       ].join('\n'),
     );
   });
+
+  it('忠誠點數指令會 defer 並格式化全部頻道結果', async () => {
+    const harness = createHarness();
+    vi.mocked(harness.sessionManager.getChannelPoints).mockResolvedValueOnce([
+      {
+        channel: 'first',
+        status: 'available',
+        balance: 1_234_567,
+        displayValue: '1.23M',
+      },
+      {
+        channel: 'second',
+        status: 'unavailable',
+        reason: 'page_unavailable',
+      },
+    ]);
+
+    await harness.bot.start();
+    await harness.socket.emit('message', interaction('12', 'points'));
+
+    expect(harness.api.registerCommands).toHaveBeenCalledWith(
+      'app-id',
+      'guild-id',
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: 'points',
+          options: [expect.objectContaining({ name: 'channel', type: 3 })],
+        }),
+      ]),
+    );
+    expect(harness.api.deferInteractionResponse).toHaveBeenCalledWith(
+      'interaction-12',
+      'token-12',
+    );
+    expect(harness.sessionManager.getChannelPoints).toHaveBeenCalledWith(
+      undefined,
+    );
+    expect(harness.api.editInteractionResponse).toHaveBeenCalledWith(
+      'app-id',
+      'token-12',
+      '忠誠點數：\nfirst：1,234,567 點\nsecond：無法取得',
+    );
+  });
+
+  it('找不到指定頻道時回覆 active 頻道清單', async () => {
+    const harness = createHarness();
+
+    await harness.bot.start();
+    await harness.socket.emit(
+      'message',
+      interaction('13', 'points', 'missing'),
+    );
+
+    expect(harness.sessionManager.getChannelPoints).toHaveBeenCalledWith(
+      'missing',
+    );
+    expect(harness.api.editInteractionResponse).toHaveBeenCalledWith(
+      'app-id',
+      'token-13',
+      '找不到正在觀看的頻道：missing\n可用頻道：first、second',
+    );
+  });
 });
 
 interface HarnessOptions {
@@ -262,6 +324,20 @@ function createHarness(options: HarnessOptions = {}) {
       channel,
       image: Buffer.from(`screenshot:${channel}`),
     })),
+    getChannelPoints: vi.fn(async (channel?: string) => {
+      const activeChannels = ['first', 'second'];
+      const selectedChannels = channel === undefined
+        ? activeChannels
+        : activeChannels.filter(
+          (active) => active.toLowerCase() === channel.toLowerCase(),
+        );
+      return selectedChannels.map((active) => ({
+        channel: active,
+        status: 'available' as const,
+        balance: 1_000,
+        displayValue: '1K',
+      }));
+    }),
   };
   const runtimeConfigManager: RuntimeConfigManager = {
     getConfig: vi.fn(() => ({
@@ -293,6 +369,7 @@ function createHarness(options: HarnessOptions = {}) {
     getRefreshStatuses: () => sessionManager.getRefreshStatuses(),
     refreshPages: (channel) => sessionManager.refreshPages(channel),
     captureScreenshot: (channel) => sessionManager.captureScreenshot(channel),
+    getChannelPoints: (channel) => sessionManager.getChannelPoints(channel),
     getConfig: () => runtimeConfigManager.getConfig(),
     setChannels: (channels) => runtimeConfigManager.setChannels(channels),
     setMaxConcurrentStreams: (value) =>

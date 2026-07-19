@@ -4,6 +4,7 @@ import {
   DefaultSessionManager,
   type ChannelSession,
   type ChannelSessionFactory,
+  type ChannelSessionPointsResult,
   type SessionManagerLogger,
 } from '../../src/sessions/SessionManager.js';
 
@@ -17,6 +18,7 @@ function createSession(
     readonly onStart?: () => Promise<void>;
     readonly onStop?: (reason: string) => Promise<void>;
     readonly screenshot?: Buffer;
+    readonly channelPoints?: ChannelSessionPointsResult;
     readonly refreshNow?: () => Promise<boolean>;
     readonly refreshStatus?: {
       readonly enabled: boolean;
@@ -38,6 +40,11 @@ function createSession(
     })),
     captureScreenshot: vi.fn(async () =>
       options.screenshot ?? Buffer.from(`screenshot:${channel}`)),
+    getChannelPoints: vi.fn(async () =>
+      options.channelPoints ?? {
+        status: 'unavailable' as const,
+        reason: 'not_found' as const,
+      }),
     refreshNow: vi.fn(options.refreshNow ?? (async () => true)),
     getRefreshStatus: vi.fn(() => ({
       channel,
@@ -166,6 +173,39 @@ describe('DefaultSessionManager', () => {
       image: Buffer.from('screenshot:second'),
     });
     await expect(manager.captureScreenshot('missing')).resolves.toBeUndefined();
+  });
+
+  it('可取得全部或指定 active session 的忠誠點數', async () => {
+    const manager = new DefaultSessionManager(createFactory((channel) =>
+      createSession(channel, {
+        channelPoints: channel === 'first'
+          ? {
+              status: 'available',
+              balance: 3_500,
+              displayValue: '3,500',
+            }
+          : { status: 'unavailable', reason: 'not_found' },
+      })));
+    await manager.reconcile(['first', 'second']);
+
+    await expect(manager.getChannelPoints()).resolves.toEqual([
+      {
+        channel: 'first',
+        status: 'available',
+        balance: 3_500,
+        displayValue: '3,500',
+      },
+      { channel: 'second', status: 'unavailable', reason: 'not_found' },
+    ]);
+    await expect(manager.getChannelPoints('FIRST')).resolves.toEqual([
+      {
+        channel: 'first',
+        status: 'available',
+        balance: 3_500,
+        displayValue: '3,500',
+      },
+    ]);
+    await expect(manager.getChannelPoints('missing')).resolves.toEqual([]);
   });
 
   it('依 active session 順序回報頁面重整狀態', async () => {

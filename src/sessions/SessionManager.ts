@@ -6,12 +6,14 @@ import {
 import type {
   ChannelSession,
   ChannelSessionFactory,
+  ChannelSessionPointsResult,
   ChannelSessionRefreshStatus,
 } from '../browser/ChannelSession.js';
 
 export type {
   ChannelSession,
   ChannelSessionFactory,
+  ChannelSessionPointsResult,
   ChannelSessionRefreshStatus,
 } from '../browser/ChannelSession.js';
 
@@ -23,6 +25,9 @@ export interface SessionManager {
   getRefreshStatuses(): readonly ChannelSessionRefreshStatus[];
   refreshPages(channel?: string): Promise<readonly SessionRefreshResult[]>;
   captureScreenshot(channel?: string): Promise<SessionScreenshot | undefined>;
+  getChannelPoints(
+    channel?: string,
+  ): Promise<readonly SessionChannelPointsResult[]>;
 }
 
 export interface SessionRefreshResult {
@@ -35,6 +40,24 @@ export interface SessionScreenshot {
   readonly channel: string;
   readonly image: Buffer;
 }
+
+export type SessionChannelPointsResult =
+  | {
+      readonly channel: string;
+      readonly status: 'available';
+      readonly balance: number;
+      readonly displayValue: string;
+    }
+  | {
+      readonly channel: string;
+      readonly status: 'unavailable';
+      readonly reason:
+        | Extract<
+            ChannelSessionPointsResult,
+            { status: 'unavailable' }
+          >['reason']
+        | 'failed';
+    };
 
 export type SessionManagerLogger = Pick<Logger, 'debug' | 'error' | 'warn'>;
 export type SessionManagerSleep = (milliseconds: number) => Promise<void>;
@@ -251,6 +274,30 @@ export class DefaultSessionManager implements SessionManager {
     }
 
     return undefined;
+  }
+
+  public async getChannelPoints(
+    requestedChannel?: string,
+  ): Promise<readonly SessionChannelPointsResult[]> {
+    const entries = requestedChannel === undefined
+      ? [...this.sessions]
+      : optionalEntry(findSession(this.sessions, requestedChannel));
+    const results: SessionChannelPointsResult[] = [];
+
+    for (const [channel, session] of entries) {
+      try {
+        const result = await session.getChannelPoints();
+        results.push({ channel, ...result });
+      } catch (error: unknown) {
+        this.safeLog('warn', 'session_channel_points_failed', {
+          channel,
+          error: safeErrorMessage(error),
+        });
+        results.push({ channel, status: 'unavailable', reason: 'failed' });
+      }
+    }
+
+    return results;
   }
 
   private async startSession(channel: string): Promise<void> {

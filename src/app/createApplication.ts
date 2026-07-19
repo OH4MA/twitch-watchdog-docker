@@ -226,6 +226,7 @@ export function createDefaultRuntime(
     refreshPages: (channel) => sessionManager.refreshPages(channel),
     captureScreenshot: (channel) =>
       sessionManager.captureScreenshot(channel),
+    getChannelPoints: (channel) => sessionManager.getChannelPoints(channel),
     getConfig: () => runtimeConfigManager.getConfig(),
     setChannels: (channels) => runtimeConfigManager.setChannels(channels),
     setMaxConcurrentStreams: (value) =>

@@ -30,6 +30,7 @@ export {
   type ChannelSessionFactory,
   type ChannelSessionInvalidationObserver,
   type ChannelSessionLogger,
+  type ChannelSessionPointsResult,
   type ChannelSessionRefreshEvent,
   type ChannelSessionRefreshObserver,
   type ChannelSessionRefreshReason,
@@ -52,6 +53,11 @@ export {
   type RewardClaimerLogger,
   type RewardClaimerOptions,
 } from './RewardClaimer.js';
+export {
+  COMMUNITY_POINTS_BALANCE_SELECTOR,
+  readChannelPointsBalance,
+  type ChannelPointsReadResult,
+} from './ChannelPointsReader.js';
 export {
   DefaultStreamPlaybackOptimizer,
   chooseQuality,

@@ -362,6 +362,10 @@ export class DefaultDiscordBot implements DiscordBot {
         await this.defer(interaction);
         await this.refreshPages(interaction, argument);
         return;
+      case 'points':
+        await this.defer(interaction);
+        await this.sendChannelPoints(interaction, argument);
+        return;
       case 'config':
         await this.reply(interaction, this.formatRuntimeConfig());
         return;
@@ -500,6 +504,39 @@ export class DefaultDiscordBot implements DiscordBot {
           }
           return `${index + 1}. ${result.channel}：重整失敗`;
         }),
+      ].join('\n'),
+    );
+  }
+
+  private async sendChannelPoints(
+    interaction: DiscordInteraction,
+    requestedChannel: string | undefined,
+  ): Promise<void> {
+    const results =
+      await this.options.commandContext.getChannelPoints(requestedChannel);
+    if (results.length === 0) {
+      const activeChannels = this.options.commandContext.getActiveChannels();
+      await this.editReply(
+        interaction,
+        activeChannels.length === 0
+          ? '目前沒有正在觀看的頻道可查詢忠誠點數。'
+          : [
+              `找不到正在觀看的頻道：${requestedChannel ?? ''}`,
+              `可用頻道：${activeChannels.join('、')}`,
+            ].join('\n'),
+      );
+      return;
+    }
+
+    await this.editReply(
+      interaction,
+      [
+        '忠誠點數：',
+        ...results.map((result) =>
+          result.status === 'available'
+            ? `${result.channel}：${result.balance.toLocaleString('en-US')} 點`
+            : `${result.channel}：無法取得`,
+        ),
       ].join('\n'),
     );
   }
@@ -755,6 +792,7 @@ const HELP_TEXT = [
   '/channels - 顯示監控頻道',
   '/refresh - 顯示 Twitch 播放器重整倒數',
   '/refresh_now [頻道] - 立即重整全部或指定觀看頁',
+  '/points [頻道] - 顯示全部或指定頻道忠誠點數',
   '/config - 顯示可調整的設定',
   '/channel_add 頻道 - 新增監控頻道',
   '/channel_remove 頻道 - 移除監控頻道',
@@ -774,6 +812,15 @@ const BOT_COMMANDS: readonly DiscordApplicationCommand[] = Object.freeze([
   {
     name: 'refresh_now',
     description: '立即重整觀看頁',
+    options: [{
+      type: 3,
+      name: 'channel',
+      description: 'Twitch 頻道名稱',
+    }],
+  },
+  {
+    name: 'points',
+    description: '顯示忠誠點數',
     options: [{
       type: 3,
       name: 'channel',

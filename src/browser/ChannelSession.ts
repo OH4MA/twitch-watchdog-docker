@@ -7,6 +7,10 @@ import {
 } from '../logging/index.js';
 import type { BrowserManager } from './BrowserManager.js';
 import {
+  readChannelPointsBalance,
+  type ChannelPointsReadResult,
+} from './ChannelPointsReader.js';
+import {
   acceptContentWarning,
   evaluateChannelHealth,
   type ChannelHealthEvaluator,
@@ -67,9 +71,14 @@ export interface ChannelSession {
   checkHealth(): Promise<ChannelHealthResult>;
   tickRewardClaim(): Promise<RewardClaimResult>;
   captureScreenshot(): Promise<Buffer>;
+  getChannelPoints(): Promise<ChannelSessionPointsResult>;
   getRefreshStatus(): ChannelSessionRefreshStatus;
   refreshNow(): Promise<boolean>;
 }
+
+export type ChannelSessionPointsResult =
+  | ChannelPointsReadResult
+  | { readonly status: 'unavailable'; readonly reason: 'page_unavailable' };
 
 export interface ChannelSessionFactory {
   create(channel: string): ChannelSession;
@@ -200,6 +209,7 @@ export class DefaultChannelSession implements ChannelSession {
   private pageRefreshTimer: NodeJS.Timeout | undefined;
   private healthFlight: Promise<ChannelHealthResult> | undefined;
   private rewardFlight: Promise<RewardClaimResult> | undefined;
+  private pointsFlight: Promise<ChannelSessionPointsResult> | undefined;
   private reloadFlight: Promise<void> | undefined;
   private nextPageRefreshAtMs: number | undefined;
   private lifecycleTail: Promise<void> = Promise.resolve();
@@ -387,6 +397,43 @@ export class DefaultChannelSession implements ChannelSession {
       fullPage: false,
     });
     return Buffer.from(screenshot);
+  }
+
+  public getChannelPoints(): Promise<ChannelSessionPointsResult> {
+    const existingFlight = this.pointsFlight;
+    if (existingFlight !== undefined) {
+      return existingFlight;
+    }
+
+    const flight = this.runPageOperation('points', async () => {
+      const page = this.page;
+      if (
+        page === undefined ||
+        page.isClosed() ||
+        !this.shouldScheduleWork()
+      ) {
+        this.logMaintenanceSkipped('points', 'page_unavailable');
+        return {
+          status: 'unavailable' as const,
+          reason: 'page_unavailable' as const,
+        };
+      }
+      return readChannelPointsBalance(page);
+    });
+    this.pointsFlight = flight;
+    flight.then(
+      () => {
+        if (this.pointsFlight === flight) {
+          this.pointsFlight = undefined;
+        }
+      },
+      () => {
+        if (this.pointsFlight === flight) {
+          this.pointsFlight = undefined;
+        }
+      },
+    );
+    return flight;
   }
 
   public getRefreshStatus(): ChannelSessionRefreshStatus {

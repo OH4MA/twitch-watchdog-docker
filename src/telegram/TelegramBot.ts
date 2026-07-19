@@ -234,6 +234,9 @@ export class DefaultTelegramBot implements TelegramBot {
       case 'refresh_now':
         await this.refreshPages(chatId, argument);
         return;
+      case 'points':
+        await this.sendChannelPoints(chatId, argument);
+        return;
       case 'config':
         await this.options.api.sendMessage(
           chatId,
@@ -394,6 +397,39 @@ export class DefaultTelegramBot implements TelegramBot {
           }
           return `${index + 1}. ${result.channel}：重整失敗`;
         }),
+      ].join('\n'),
+    );
+  }
+
+  private async sendChannelPoints(
+    chatId: string,
+    requestedChannel: string | undefined,
+  ): Promise<void> {
+    const results =
+      await this.options.commandContext.getChannelPoints(requestedChannel);
+    if (results.length === 0) {
+      const activeChannels = this.options.commandContext.getActiveChannels();
+      await this.options.api.sendMessage(
+        chatId,
+        activeChannels.length === 0
+          ? '目前沒有正在觀看的頻道可查詢忠誠點數。'
+          : [
+              `找不到正在觀看的頻道：${requestedChannel ?? ''}`,
+              `可用頻道：${activeChannels.join('、')}`,
+            ].join('\n'),
+      );
+      return;
+    }
+
+    await this.options.api.sendMessage(
+      chatId,
+      [
+        '忠誠點數：',
+        ...results.map((result) =>
+          result.status === 'available'
+            ? `${result.channel}：${result.balance.toLocaleString('en-US')} 點`
+            : `${result.channel}：無法取得`,
+        ),
       ].join('\n'),
     );
   }
@@ -641,6 +677,7 @@ const HELP_TEXT = [
   '/channels - 顯示監控頻道',
   '/refresh - 顯示 Twitch 播放器重整倒數',
   '/refresh_now [頻道] - 立即重整全部或指定觀看頁',
+  '/points [頻道] - 顯示全部或指定頻道忠誠點數',
   '/config - 顯示可調整的設定',
   '/channel_add 頻道 - 新增監控頻道',
   '/channel_remove 頻道 - 移除監控頻道',
@@ -658,6 +695,7 @@ const BOT_COMMANDS: readonly TelegramBotCommand[] = Object.freeze([
   { command: 'channels', description: '顯示監控頻道' },
   { command: 'refresh', description: '顯示播放器重整倒數' },
   { command: 'refresh_now', description: '立即重整觀看頁' },
+  { command: 'points', description: '顯示忠誠點數' },
   { command: 'config', description: '顯示頻道與同時觀看設定' },
   { command: 'channel_add', description: '新增監控頻道' },
   { command: 'channel_remove', description: '移除監控頻道' },
@@ -674,6 +712,7 @@ const COMMAND_KEYBOARD: TelegramReplyKeyboardMarkup = Object.freeze({
   keyboard: [
     [{ text: '/status' }, { text: '/channels' }],
     [{ text: '/refresh' }, { text: '/refresh_now' }],
+    [{ text: '/points' }],
     [{ text: '/config' }],
     [{ text: '/check' }, { text: '/screenshot' }],
     [{ text: '/pause' }, { text: '/resume' }],
