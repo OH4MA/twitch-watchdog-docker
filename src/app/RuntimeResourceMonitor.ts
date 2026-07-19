@@ -161,9 +161,14 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       return;
     }
 
+    const shouldLogTelemetry =
+      options.forceTelemetry ||
+      this.now() - this.lastTelemetryAtMs >=
+        this.options.intervalSeconds * 1_000;
+
     let cgroup: CgroupSnapshot | undefined;
     if (this.resourceGuard?.enabled === true || this.cgroupAvailable !== false) {
-      cgroup = await this.readCgroupSafely();
+      cgroup = await this.readCgroupSafely(shouldLogTelemetry);
     }
 
     if (
@@ -195,17 +200,15 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       });
     }
 
-    const shouldLogTelemetry =
-      options.forceTelemetry ||
-      this.now() - this.lastTelemetryAtMs >=
-        this.options.intervalSeconds * 1_000;
     if (shouldLogTelemetry) {
       this.recordSnapshot(cgroup);
       this.lastTelemetryAtMs = this.now();
     }
   }
 
-  private async readCgroupSafely(): Promise<CgroupSnapshot | undefined> {
+  private async readCgroupSafely(
+    fullSnapshot: boolean,
+  ): Promise<CgroupSnapshot | undefined> {
     try {
       if (this.cgroupAvailable === undefined) {
         const probe = await this.cgroupReader.probe();
@@ -218,7 +221,9 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       if (this.cgroupAvailable === false) {
         return undefined;
       }
-      return await this.cgroupReader.readSnapshot();
+      return fullSnapshot
+        ? await this.cgroupReader.readSnapshot()
+        : await this.cgroupReader.readPolicySnapshot();
     } catch (error: unknown) {
       if (this.cgroupAvailable === true) {
         this.options.logger.debug('cgroup_sample_failed', {

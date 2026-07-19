@@ -85,6 +85,11 @@ describe('RuntimeResourceMonitor', () => {
         events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
       },
     ];
+    const readNextSnapshot = async () => {
+      const current = samples[Math.min(sampleIndex, samples.length - 1)]!;
+      sampleIndex += 1;
+      return current;
+    };
 
     const monitor = new RuntimeResourceMonitor({
       browserManager: {
@@ -101,11 +106,8 @@ describe('RuntimeResourceMonitor', () => {
         .sampledAtMonotonicMs,
       cgroupReader: {
         probe: async () => ({ available: true, rootPath: '/sys/fs/cgroup' }),
-        readSnapshot: async () => {
-          const current = samples[Math.min(sampleIndex, samples.length - 1)]!;
-          sampleIndex += 1;
-          return current;
-        },
+        readSnapshot: readNextSnapshot,
+        readPolicySnapshot: readNextSnapshot,
       } as unknown as CgroupV2Reader,
     });
 
@@ -119,6 +121,65 @@ describe('RuntimeResourceMonitor', () => {
       'resource_guard_browser_recycle_requested',
       expect.objectContaining({ reason: 'sustained_high_memory' }),
     );
+
+    await monitor.stop();
+  });
+
+  it('guard 高頻採樣使用 policy snapshot，telemetry cadence 使用 full snapshot', async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const logger = createLogger();
+    const createSnapshot = () => ({
+      sampledAtMonotonicMs: now,
+      memoryCurrentBytes: mibToBytes(1_000),
+      swapCurrentBytes: 0n,
+      events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
+    });
+    const readSnapshot = vi.fn(async () => ({
+      ...createSnapshot(),
+      memoryMaxBytes: mibToBytes(8_000),
+      memoryPeakBytes: mibToBytes(1_500),
+      pidsCurrent: 20n,
+      cpu: { usageUsec: 100n },
+    }));
+    const readPolicySnapshot = vi.fn(async () => createSnapshot());
+    const monitor = new RuntimeResourceMonitor({
+      browserManager: {
+        getPageCount: () => 1,
+        restart: vi.fn(),
+      },
+      sessionManager: { getActiveChannels: () => ['one'] },
+      logger,
+      intervalSeconds: 60,
+      resourceGuard: createDefaultResourceGuard(3, {
+        scaleWithStreams: false,
+      }),
+      now: () => now,
+      cgroupReader: {
+        probe: async () => ({ available: true, rootPath: '/sys/fs/cgroup' }),
+        readSnapshot,
+        readPolicySnapshot,
+      } as unknown as CgroupV2Reader,
+    });
+
+    await monitor.start();
+    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(readPolicySnapshot).not.toHaveBeenCalled();
+
+    for (now = 2_000; now < 60_000; now += 2_000) {
+      await vi.advanceTimersByTimeAsync(2_000);
+    }
+    expect(readSnapshot).toHaveBeenCalledOnce();
+    expect(readPolicySnapshot).toHaveBeenCalledTimes(29);
+
+    now = 60_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(readSnapshot).toHaveBeenCalledTimes(2);
+    expect(readPolicySnapshot).toHaveBeenCalledTimes(29);
+    const telemetryCalls = logger.info.mock.calls.filter(
+      (call) => call[0] === 'runtime_resource_snapshot',
+    );
+    expect(telemetryCalls).toHaveLength(2);
 
     await monitor.stop();
   });

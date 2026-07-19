@@ -187,6 +187,9 @@ Important events:
 `cgroupCpuUsageUsec`、`cgroupCpuUserUsec` 與 `cgroupCpuSystemUsec` 是容器自啟動以來的累計微秒數；比較相鄰 snapshot 的差值可計算整個 cgroup（包含 Firefox）的 CPU 使用量。`npm run benchmark:csv` 會保留這些欄位。
 `cgroupCpuUsageUsec`, `cgroupCpuUserUsec`, and `cgroupCpuSystemUsec` are cumulative microseconds since the container started. Compare deltas between adjacent snapshots to calculate whole-cgroup CPU usage, including Firefox. `npm run benchmark:csv` preserves these fields.
 
+啟用 resource guard 時，高頻政策採樣只讀 `memory.current`、`memory.events` 與 `memory.swap.current`；啟動及 `resource_telemetry_interval_seconds` 週期才讀取包含 `memory.max`、`memory.peak`、`pids.current` 與 `cpu.stat` 的完整 snapshot。預設 2 秒 guard、60 秒 telemetry 下，cgroup metric 讀檔量約由每分鐘 210 次降至 94 次，同時維持原有政策決策頻率。
+When the resource guard is enabled, high-frequency policy samples read only `memory.current`, `memory.events`, and `memory.swap.current`. Startup and `resource_telemetry_interval_seconds` intervals use full snapshots that also include `memory.max`, `memory.peak`, `pids.current`, and `cpu.stat`. With the default 2-second guard and 60-second telemetry cadence, cgroup metric reads drop from approximately 210 to 94 per minute while preserving the existing policy decision frequency.
+
 健康狀態與獎勵候選會以批次 DOM snapshot 讀取；播放器解析度已符合設定時不再開啟 Twitch 畫質選單。這些最佳化不改變既有設定或對外介面。
 Health state and reward candidates are read through batched DOM snapshots. When the active video resolution already matches the configured quality, the Twitch quality menu is not opened. These optimizations do not change existing configuration or public interfaces.
 

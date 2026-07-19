@@ -102,26 +102,26 @@ export class CgroupV2Reader {
 
   public async readSnapshot(): Promise<CgroupSnapshot> {
     const rootPath = await this.resolveRootPath();
-    const memoryCurrentBytes = await this.readRequiredCounter(
-      path.join(rootPath, 'memory.current'),
-      'memory.current',
-    );
-    const events = await this.readMemoryEvents(
-      path.join(rootPath, 'memory.events'),
-    );
-    const memoryMaxBytes = await this.readOptionalCounter(
-      path.join(rootPath, 'memory.max'),
-    );
-    const memoryPeakBytes = await this.readOptionalCounter(
-      path.join(rootPath, 'memory.peak'),
-    );
-    const swapCurrentBytes = await this.readOptionalCounter(
-      path.join(rootPath, 'memory.swap.current'),
-    );
-    const pidsCurrent = await this.readOptionalCounter(
-      path.join(rootPath, 'pids.current'),
-    );
-    const cpu = await this.readCpuStat(path.join(rootPath, 'cpu.stat'));
+    const [
+      memoryCurrentBytes,
+      events,
+      swapCurrentBytes,
+      memoryMaxBytes,
+      memoryPeakBytes,
+      pidsCurrent,
+      cpu,
+    ] = await Promise.all([
+      this.readRequiredCounter(
+        path.join(rootPath, 'memory.current'),
+        'memory.current',
+      ),
+      this.readMemoryEvents(path.join(rootPath, 'memory.events')),
+      this.readOptionalCounter(path.join(rootPath, 'memory.swap.current')),
+      this.readOptionalCounter(path.join(rootPath, 'memory.max')),
+      this.readOptionalCounter(path.join(rootPath, 'memory.peak')),
+      this.readOptionalCounter(path.join(rootPath, 'pids.current')),
+      this.readCpuStat(path.join(rootPath, 'cpu.stat')),
+    ]);
 
     return {
       sampledAtMonotonicMs: this.now(),
@@ -132,6 +132,26 @@ export class CgroupV2Reader {
       ...(pidsCurrent === undefined ? {} : { pidsCurrent }),
       events,
       ...(cpu === undefined ? {} : { cpu }),
+    };
+  }
+
+  /** 僅讀取高頻 resource guard 決策需要的 counters。 */
+  public async readPolicySnapshot(): Promise<CgroupSnapshot> {
+    const rootPath = await this.resolveRootPath();
+    const [memoryCurrentBytes, events, swapCurrentBytes] = await Promise.all([
+      this.readRequiredCounter(
+        path.join(rootPath, 'memory.current'),
+        'memory.current',
+      ),
+      this.readMemoryEvents(path.join(rootPath, 'memory.events')),
+      this.readOptionalCounter(path.join(rootPath, 'memory.swap.current')),
+    ]);
+
+    return {
+      sampledAtMonotonicMs: this.now(),
+      memoryCurrentBytes,
+      ...(swapCurrentBytes === undefined ? {} : { swapCurrentBytes }),
+      events,
     };
   }
 

@@ -4,7 +4,10 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { CgroupV2Reader } from '../../src/app/CgroupV2Reader.js';
+import {
+  CgroupV2Reader,
+  type CgroupFileSystem,
+} from '../../src/app/CgroupV2Reader.js';
 
 const tempDirs: string[] = [];
 
@@ -20,6 +23,64 @@ async function createFixtureRoot(): Promise<string> {
 }
 
 describe('CgroupV2Reader', () => {
+  it('policy snapshot 只讀三個 guard counter，full snapshot 才讀完整欄位', async () => {
+    const root = '/test/cgroup';
+    const files = new Map<string, string>([
+      [path.join(root, 'memory.current'), '100\n'],
+      [path.join(root, 'memory.events'), 'high 1\nmax 0\noom 0\noom_kill 0\n'],
+      [path.join(root, 'memory.swap.current'), '5\n'],
+      [path.join(root, 'memory.max'), '1000\n'],
+      [path.join(root, 'memory.peak'), '200\n'],
+      [path.join(root, 'pids.current'), '10\n'],
+      [path.join(root, 'cpu.stat'), 'usage_usec 50\n'],
+    ]);
+    const reads: string[] = [];
+    const fs: CgroupFileSystem = {
+      async access(filePath): Promise<void> {
+        if (!files.has(filePath)) {
+          throw new Error('missing fixture');
+        }
+      },
+      async readFile(filePath): Promise<string> {
+        reads.push(path.basename(filePath));
+        const value = files.get(filePath);
+        if (value === undefined) {
+          throw new Error('missing fixture');
+        }
+        return value;
+      },
+    };
+    const reader = new CgroupV2Reader({
+      fs,
+      sysFsCgroupPath: root,
+      now: () => 123,
+    });
+
+    await expect(reader.readPolicySnapshot()).resolves.toEqual({
+      sampledAtMonotonicMs: 123,
+      memoryCurrentBytes: 100n,
+      swapCurrentBytes: 5n,
+      events: { high: 1n, max: 0n, oom: 0n, oomKill: 0n },
+    });
+    expect(reads.sort()).toEqual([
+      'memory.current',
+      'memory.events',
+      'memory.swap.current',
+    ]);
+
+    reads.length = 0;
+    await reader.readSnapshot();
+    expect(reads.sort()).toEqual([
+      'cpu.stat',
+      'memory.current',
+      'memory.events',
+      'memory.max',
+      'memory.peak',
+      'memory.swap.current',
+      'pids.current',
+    ]);
+  });
+
   it('從 cgroup 根目錄讀取 cpu/memory/swap/pids/events', async () => {
     const root = await createFixtureRoot();
     await writeFile(path.join(root, 'memory.current'), '123456789\n');
