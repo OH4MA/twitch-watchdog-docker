@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { expect, test } from '@playwright/test';
 
 import { evaluateChannelHealth } from '../../src/browser/ChannelSession.js';
+import { collapseSideNav } from '../../src/browser/SideNavCollapser.js';
 
 function mockPageUrl(fileName: string): string {
   return pathToFileURL(
@@ -12,6 +13,18 @@ function mockPageUrl(fileName: string): string {
 }
 
 test.describe('ChannelSession mock pages', () => {
+  test('展開的 Twitch 左側欄會自動收合', async ({ page }) => {
+    await page.goto(mockPageUrl('side-nav.html'));
+
+    await expect(collapseSideNav(page)).resolves.toBe('collapsed');
+    await expect(
+      page.locator('[data-a-target="side-nav-arrow"]'),
+    ).toHaveAttribute('aria-expanded', 'false');
+    await expect(collapseSideNav(page)).resolves.toBe(
+      'already_collapsed',
+    );
+  });
+
   test('live 頁面判定 healthy', async ({ page }) => {
     const url = mockPageUrl('live.html');
     await page.goto(url);

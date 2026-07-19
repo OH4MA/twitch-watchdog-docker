@@ -59,3 +59,8 @@ export {
   type StreamPlaybackOptimizer,
   type StreamPlaybackOptimizerLogger,
 } from './StreamPlaybackOptimizer.js';
+export {
+  SIDE_NAV_TOGGLE_SELECTOR,
+  collapseSideNav,
+  type SideNavCollapseResult,
+} from './SideNavCollapser.js';

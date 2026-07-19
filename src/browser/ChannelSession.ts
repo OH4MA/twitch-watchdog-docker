@@ -16,6 +16,7 @@ import type {
   RewardClaimer,
   RewardClaimResult,
 } from './RewardClaimer.js';
+import { collapseSideNav } from './SideNavCollapser.js';
 import {
   DefaultStreamPlaybackOptimizer,
   type StreamPlaybackOptimizer,
@@ -262,6 +263,7 @@ export class DefaultChannelSession implements ChannelSession {
           throw new Error('頻道頁面導向非預期 Twitch URL');
         }
         await this.acceptContentWarningIfPresent(page, 'start');
+        await this.collapseSideNavIfExpanded(page, 'start');
         await this.optimizePlayback(page);
 
         this.currentState = 'watching';
@@ -746,6 +748,26 @@ export class DefaultChannelSession implements ChannelSession {
     });
   }
 
+  private async collapseSideNavIfExpanded(
+    page: Page,
+    reason: string,
+  ): Promise<void> {
+    const result = await collapseSideNav(page);
+    if (result === 'collapsed') {
+      safeLog(this.logger, 'debug', 'side_nav_collapsed', {
+        channel: this.channel,
+        reason,
+      });
+      return;
+    }
+    if (result === 'failed') {
+      safeLog(this.logger, 'debug', 'side_nav_collapse_skipped', {
+        channel: this.channel,
+        reason,
+      });
+    }
+  }
+
   private scheduleHealthCheck(): void {
     if (!this.shouldScheduleWork()) {
       return;
@@ -918,6 +940,7 @@ export class DefaultChannelSession implements ChannelSession {
   private async runPageReload(page: Page, reason: string): Promise<void> {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await this.acceptContentWarningIfPresent(page, reason);
+    await this.collapseSideNavIfExpanded(page, reason);
     await this.optimizePlayback(page);
     safeLog(this.logger, 'debug', 'page_reloaded', {
       channel: this.channel,

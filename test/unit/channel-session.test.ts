@@ -18,6 +18,7 @@ import type {
 } from '../../src/browser/RewardClaimer.js';
 import type { AppConfig } from '../../src/config/AppConfig.js';
 import { LOG_EVENTS } from '../../src/logging/index.js';
+import { SIDE_NAV_TOGGLE_SELECTOR } from '../../src/browser/SideNavCollapser.js';
 
 type HealthMarker =
   | 'loginRequired'
@@ -33,7 +34,9 @@ interface MockPageControls {
   readonly reload: ReturnType<typeof vi.fn>;
   readonly screenshot: ReturnType<typeof vi.fn>;
   readonly contentWarningClickCount: () => number;
+  readonly sideNavCollapseClickCount: () => number;
   setMarker(marker: HealthMarker | undefined): void;
+  setSideNavExpanded(expanded: boolean): void;
   setUrl(url: string): void;
   setClosed(closed: boolean): void;
 }
@@ -109,15 +112,20 @@ function createMockPage(input: {
   readonly reloadError?: Error;
   readonly reloadImplementation?: () => Promise<null>;
   readonly contentWarningClickError?: Error;
+  readonly sideNavExpanded?: boolean;
 } = {}): MockPageControls {
   let marker = input.marker;
   let currentUrl = input.url ?? 'about:blank';
   let closed = false;
   let contentWarningClickCount = 0;
+  let sideNavPresent = input.sideNavExpanded !== undefined;
+  let sideNavExpanded = input.sideNavExpanded ?? false;
+  let sideNavCollapseClickCount = 0;
 
   const locator = (selector: string): Locator => {
     const visible =
-      marker !== undefined && selector === CHANNEL_HEALTH_SELECTORS[marker];
+      (marker !== undefined && selector === CHANNEL_HEALTH_SELECTORS[marker]) ||
+      (sideNavPresent && selector === SIDE_NAV_TOGGLE_SELECTOR);
     const mockLocator = {
       first(): Locator {
         return mockLocator as unknown as Locator;
@@ -126,6 +134,11 @@ function createMockPage(input: {
         return visible;
       },
       async click(): Promise<void> {
+        if (selector === SIDE_NAV_TOGGLE_SELECTOR && sideNavExpanded) {
+          sideNavExpanded = false;
+          sideNavCollapseClickCount += 1;
+          return;
+        }
         if (
           marker === 'contentWarning' &&
           selector === CHANNEL_HEALTH_SELECTORS.contentWarning
@@ -141,6 +154,9 @@ function createMockPage(input: {
         if (!visible) {
           throw new Error('locator is not visible');
         }
+      },
+      async evaluate(): Promise<boolean> {
+        return sideNavExpanded;
       },
     };
     return mockLocator as unknown as Locator;
@@ -190,8 +206,13 @@ function createMockPage(input: {
     reload,
     screenshot,
     contentWarningClickCount: () => contentWarningClickCount,
+    sideNavCollapseClickCount: () => sideNavCollapseClickCount,
     setMarker(value): void {
       marker = value;
+    },
+    setSideNavExpanded(value): void {
+      sideNavPresent = true;
+      sideNavExpanded = value;
     },
     setUrl(value): void {
       currentUrl = value;
@@ -449,6 +470,39 @@ describe('DefaultChannelSession', () => {
         reason: 'start',
       },
     );
+
+    await session.stop('test_complete');
+  });
+
+  it('start 與 reload 後會自動收合展開的 Twitch 左側欄', async () => {
+    const mockPage = createMockPage({
+      marker: 'liveContent',
+      sideNavExpanded: true,
+    });
+    const browser = createBrowserManager(mockPage.page);
+    const logs = createLogger();
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+      logger: logs.logger,
+    });
+
+    await session.start();
+    expect(mockPage.sideNavCollapseClickCount()).toBe(1);
+    expect(logs.debug).toHaveBeenCalledWith('side_nav_collapsed', {
+      channel: CHANNEL,
+      reason: 'start',
+    });
+
+    mockPage.setSideNavExpanded(true);
+    await session.refreshNow();
+    expect(mockPage.sideNavCollapseClickCount()).toBe(2);
+    expect(logs.debug).toHaveBeenCalledWith('side_nav_collapsed', {
+      channel: CHANNEL,
+      reason: 'manual_refresh',
+    });
 
     await session.stop('test_complete');
   });

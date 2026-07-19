@@ -183,6 +183,8 @@ Important events:
   Includes Node process fields plus cgroup memory, cumulative CPU-time, and process-count fields (for example, `cgroupMemoryCurrentBytes`, `cgroupCpuUsageUsec`, and `cgroupPidsCurrent`).
 - `session_maintenance_completed` / `session_maintenance_skipped`：健康檢查、獎勵領取、畫質維持與頁面重整的排隊時間、執行時間、結果或略過原因。同一頁面的維護操作會依序執行，避免 Playwright DOM 操作互相競爭。
   Reports queue time, execution time, outcome, or skip reason for health checks, reward claims, quality enforcement, and reloads. Maintenance operations on the same page run sequentially to avoid competing Playwright DOM actions.
+- `side_nav_collapsed` / `side_nav_collapse_skipped`：啟動或 reload 後的 Twitch 左側欄收合結果；找不到按鈕或側欄已收合時不會輸出失敗事件。
+  Reports Twitch sidebar collapse outcomes after startup or reload. A missing toggle or an already-collapsed sidebar is not treated as a failure.
 
 `cgroupCpuUsageUsec`、`cgroupCpuUserUsec` 與 `cgroupCpuSystemUsec` 是容器自啟動以來的累計微秒數；比較相鄰 snapshot 的差值可計算整個 cgroup（包含 Firefox）的 CPU 使用量。`npm run benchmark:csv` 會保留這些欄位。
 `cgroupCpuUsageUsec`, `cgroupCpuUserUsec`, and `cgroupCpuSystemUsec` are cumulative microseconds since the container started. Compare deltas between adjacent snapshots to calculate whole-cgroup CPU usage, including Firefox. `npm run benchmark:csv` preserves these fields.

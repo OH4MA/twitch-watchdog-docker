@@ -11,6 +11,8 @@ Twitch Watchdog 是可用 Docker 長時間執行的 Twitch 觀看輔助服務。
 - 使用 Firefox 播放 Twitch直播。
 - 自動確認 Twitch 直播頁的內容警示（`Start Watching`）後繼續觀看。
   Automatically accepts Twitch channel content warnings (`Start Watching`) before continuing playback.
+- 啟動與頁面重整後自動收合 Twitch 左側推薦頻道欄，減少非必要畫面內容。
+  Automatically collapses Twitch's recommended-channel sidebar after startup and page reloads to reduce nonessential page content.
 - 自動領取 Bonus Channel Points。
 - Bonus Channel Points 連續領取失敗 10 次時，會先重整該頻道頁面；重整後若再次連續失敗 10 次，會結束程序並交由 Docker restart policy 重啟容器。
   If Bonus Channel Points claiming fails 10 times in a row, the service first refreshes that channel page; if it fails 10 more times after the refresh, it exits so Docker can restart the container through the configured restart policy.
