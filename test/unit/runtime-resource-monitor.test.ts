@@ -123,6 +123,44 @@ describe('RuntimeResourceMonitor', () => {
     await monitor.stop();
   });
 
+  it('runtime snapshot 包含 cgroup CPU 累計時間', async () => {
+    const logger = createLogger();
+    const monitor = new RuntimeResourceMonitor({
+      browserManager: {
+        getPageCount: () => 1,
+        restart: vi.fn(),
+      },
+      sessionManager: { getActiveChannels: () => ['one'] },
+      logger,
+      intervalSeconds: 60,
+      cgroupReader: {
+        probe: async () => ({ available: true, rootPath: '/sys/fs/cgroup' }),
+        readSnapshot: async () => ({
+          sampledAtMonotonicMs: 0,
+          memoryCurrentBytes: 1_000n,
+          cpu: {
+            usageUsec: 9_007_199_254_740_992n,
+            userUsec: 700n,
+            systemUsec: 300n,
+          },
+          events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
+        }),
+      } as unknown as CgroupV2Reader,
+    });
+
+    await monitor.start();
+
+    expect(logger.info).toHaveBeenCalledWith(
+      'runtime_resource_snapshot',
+      expect.objectContaining({
+        cgroupCpuUsageUsec: '9007199254740992',
+        cgroupCpuUserUsec: 700,
+        cgroupCpuSystemUsec: 300,
+      }),
+    );
+    await monitor.stop();
+  });
+
   it('emergency 時呼叫 container restart handler', async () => {
     const logger = createLogger();
     const onContainerRestartRequested = vi.fn(async () => undefined);

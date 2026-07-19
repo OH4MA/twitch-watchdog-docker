@@ -389,6 +389,7 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
     const cpu = process.cpuUsage();
     const resources = process.resourceUsage();
     const events = cgroup?.events;
+    const cgroupCpu = cgroup?.cpu;
 
     this.options.logger.info('runtime_resource_snapshot', {
       processCpuUserUs: cpu.user,
@@ -406,6 +407,9 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       cgroupMemoryPeakBytes: serializableByteCount(cgroup?.memoryPeakBytes),
       cgroupSwapCurrentBytes: serializableByteCount(cgroup?.swapCurrentBytes),
       cgroupPidsCurrent: serializableByteCount(cgroup?.pidsCurrent),
+      cgroupCpuUsageUsec: serializableByteCount(cgroupCpu?.usageUsec),
+      cgroupCpuUserUsec: serializableByteCount(cgroupCpu?.userUsec),
+      cgroupCpuSystemUsec: serializableByteCount(cgroupCpu?.systemUsec),
       cgroupMemoryEventsHigh: serializableByteCount(events?.high),
       cgroupMemoryEventsMax: serializableByteCount(events?.max),
       cgroupMemoryEventsOom: serializableByteCount(events?.oom),

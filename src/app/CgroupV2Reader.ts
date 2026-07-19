@@ -8,6 +8,12 @@ export interface CgroupMemoryEvents {
   readonly oomKill: bigint;
 }
 
+export interface CgroupCpuStat {
+  readonly usageUsec: bigint;
+  readonly userUsec?: bigint;
+  readonly systemUsec?: bigint;
+}
+
 export interface CgroupSnapshot {
   readonly sampledAtMonotonicMs: number;
   readonly memoryCurrentBytes: bigint;
@@ -16,6 +22,7 @@ export interface CgroupSnapshot {
   readonly swapCurrentBytes?: bigint;
   readonly pidsCurrent?: bigint;
   readonly events: CgroupMemoryEvents;
+  readonly cpu?: CgroupCpuStat;
 }
 
 export type CgroupReaderAvailability =
@@ -57,7 +64,7 @@ export class CgroupV2ReadError extends Error {
 }
 
 /**
- * Reads cgroup v2 memory/pids counters for the current process tree.
+ * Reads cgroup v2 CPU, memory, and pids counters for the current process tree.
  * Missing optional files are treated as unavailable, not zero.
  */
 export class CgroupV2Reader {
@@ -114,6 +121,7 @@ export class CgroupV2Reader {
     const pidsCurrent = await this.readOptionalCounter(
       path.join(rootPath, 'pids.current'),
     );
+    const cpu = await this.readCpuStat(path.join(rootPath, 'cpu.stat'));
 
     return {
       sampledAtMonotonicMs: this.now(),
@@ -123,6 +131,7 @@ export class CgroupV2Reader {
       ...(swapCurrentBytes === undefined ? {} : { swapCurrentBytes }),
       ...(pidsCurrent === undefined ? {} : { pidsCurrent }),
       events,
+      ...(cpu === undefined ? {} : { cpu }),
     };
   }
 
@@ -267,6 +276,45 @@ export class CgroupV2Reader {
     }
 
     return { high, max, oom, oomKill };
+  }
+
+  private async readCpuStat(filePath: string): Promise<CgroupCpuStat | undefined> {
+    const source = await this.readOptionalText(filePath);
+    if (source === undefined) {
+      return undefined;
+    }
+
+    const counters = new Map<string, bigint>();
+    for (const line of source.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed === '') {
+        continue;
+      }
+      const [key, rawValue] = trimmed.split(/\s+/u);
+      if (key === undefined || rawValue === undefined) {
+        continue;
+      }
+      try {
+        counters.set(
+          key,
+          parseNonNegativeBigInt(rawValue, `cpu.stat.${key}`),
+        );
+      } catch {
+        // 忽略損壞的可選 CPU counter，避免中斷記憶體防護。
+      }
+    }
+
+    const usageUsec = counters.get('usage_usec');
+    if (usageUsec === undefined) {
+      return undefined;
+    }
+    const userUsec = counters.get('user_usec');
+    const systemUsec = counters.get('system_usec');
+    return {
+      usageUsec,
+      ...(userUsec === undefined ? {} : { userUsec }),
+      ...(systemUsec === undefined ? {} : { systemUsec }),
+    };
   }
 
   private async readRequiredCounter(

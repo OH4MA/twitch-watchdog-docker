@@ -179,8 +179,16 @@ Important events:
   Resource-guard decisions and browser recycle / container restart requests from cgroup memory policy.
 - `cgroup_metrics_unavailable` / `resource_guard_limit_clamped`：cgroup 不可用，或縮放門檻被 `memory.max` 壓低。
   Cgroup metrics unavailable, or scaled thresholds clamped under `memory.max`.
-- `runtime_resource_snapshot`：同時包含 Node process 欄位與 cgroup 欄位（`cgroupMemoryCurrentBytes` 等）。
-  Includes both Node process fields and cgroup fields (`cgroupMemoryCurrentBytes`, etc.).
+- `runtime_resource_snapshot`：同時包含 Node process 欄位，以及 cgroup 記憶體、CPU 累計時間與程序數欄位（例如 `cgroupMemoryCurrentBytes`、`cgroupCpuUsageUsec`、`cgroupPidsCurrent`）。
+  Includes Node process fields plus cgroup memory, cumulative CPU-time, and process-count fields (for example, `cgroupMemoryCurrentBytes`, `cgroupCpuUsageUsec`, and `cgroupPidsCurrent`).
+- `session_maintenance_completed` / `session_maintenance_skipped`：健康檢查、獎勵領取、畫質維持與頁面重整的排隊時間、執行時間、結果或略過原因。同一頁面的維護操作會依序執行，避免 Playwright DOM 操作互相競爭。
+  Reports queue time, execution time, outcome, or skip reason for health checks, reward claims, quality enforcement, and reloads. Maintenance operations on the same page run sequentially to avoid competing Playwright DOM actions.
+
+`cgroupCpuUsageUsec`、`cgroupCpuUserUsec` 與 `cgroupCpuSystemUsec` 是容器自啟動以來的累計微秒數；比較相鄰 snapshot 的差值可計算整個 cgroup（包含 Firefox）的 CPU 使用量。`npm run benchmark:csv` 會保留這些欄位。
+`cgroupCpuUsageUsec`, `cgroupCpuUserUsec`, and `cgroupCpuSystemUsec` are cumulative microseconds since the container started. Compare deltas between adjacent snapshots to calculate whole-cgroup CPU usage, including Firefox. `npm run benchmark:csv` preserves these fields.
+
+健康狀態與獎勵候選會以批次 DOM snapshot 讀取；播放器解析度已符合設定時不再開啟 Twitch 畫質選單。這些最佳化不改變既有設定或對外介面。
+Health state and reward candidates are read through batched DOM snapshots. When the active video resolution already matches the configured quality, the Twitch quality menu is not opened. These optimizations do not change existing configuration or public interfaces.
 
 貼回問題 log 時，請保留同一段時間內的 `scheduler_tick_*`、`session_*`、`browser_*`、`page_*`、`resource_guard_*` 與 `runtime_resource_snapshot` 事件。
 When sharing logs for debugging, include `scheduler_tick_*`, `session_*`, `browser_*`, `page_*`, `resource_guard_*`, and `runtime_resource_snapshot` events from the same time window.

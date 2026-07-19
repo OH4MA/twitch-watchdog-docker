@@ -30,6 +30,7 @@ type MockElement = {
 class MockLocator {
   public constructor(
     private readonly elements: readonly MockElement[],
+    private readonly onEvaluateAll?: () => void,
   ) {}
 
   public async count(): Promise<number> {
@@ -38,35 +39,31 @@ class MockLocator {
 
   public nth(index: number): MockLocator {
     const element = this.elements[index];
-    return new MockLocator(element === undefined ? [] : [element]);
+    return new MockLocator(
+      element === undefined ? [] : [element],
+      this.onEvaluateAll,
+    );
   }
 
   public locator(selector: string): MockLocator {
     if (selector !== REWARD_BUTTON_LIKE_SELECTOR) {
-      return new MockLocator([]);
+      return new MockLocator([], this.onEvaluateAll);
     }
 
     return new MockLocator(
       this.elements.flatMap((element) => element.descendants ?? []),
+      this.onEvaluateAll,
     );
   }
 
-  public async isVisible(): Promise<boolean> {
-    return this.elements[0]?.visible ?? false;
-  }
-
-  public async isDisabled(): Promise<boolean> {
-    return this.elements[0]?.disabled ?? false;
-  }
-
-  public async getAttribute(name: string): Promise<string | null> {
-    if (name === 'aria-label') {
-      return this.elements[0]?.ariaLabel ?? null;
-    }
-    if (name === 'class') {
-      return this.elements[0]?.className ?? null;
-    }
-    return null;
+  public async evaluateAll<TResult>(): Promise<TResult> {
+    this.onEvaluateAll?.();
+    return this.elements.map((element) => ({
+      visible: element.visible ?? false,
+      disabled: element.disabled ?? false,
+      ariaLabel: element.ariaLabel ?? null,
+      className: element.className ?? null,
+    })) as TResult;
   }
 
   public async click(
@@ -87,6 +84,7 @@ class MockLocator {
 function createPage(input: {
   readonly primary?: readonly MockElement[];
   readonly fallback?: readonly MockElement[];
+  readonly onEvaluateAll?: () => void;
 } = {}): Page {
   const summary: MockElement = {
     visible: true,
@@ -96,14 +94,18 @@ function createPage(input: {
   return {
     locator(selector: string): MockLocator {
       if (selector === COMMUNITY_POINTS_CLAIM_BUTTON_SELECTOR) {
-        return new MockLocator(input.primary ?? []);
+        return new MockLocator(
+          input.primary ?? [],
+          input.onEvaluateAll,
+        );
       }
       if (selector === COMMUNITY_POINTS_SUMMARY_SELECTOR) {
         return new MockLocator(
           input.fallback === undefined ? [] : [summary],
+          input.onEvaluateAll,
         );
       }
-      return new MockLocator([]);
+      return new MockLocator([], input.onEvaluateAll);
     },
   } as unknown as Page;
 }
@@ -189,15 +191,41 @@ describe('RewardClaimer', () => {
 
   it('primary selector 不存在時使用 summary 結構 fallback', async () => {
     const click = vi.fn(async () => undefined);
+    const onEvaluateAll = vi.fn();
     const claimer = new RewardClaimer({ clock: () => START_TIME });
 
     const result = await claimer.claimIfAvailable(
-      createPage({ fallback: [{ visible: true, click }] }),
+      createPage({
+        fallback: [{ visible: true, click }],
+        onEvaluateAll,
+      }),
       'streamer_two',
     );
 
     expect(click).toHaveBeenCalledOnce();
+    expect(onEvaluateAll).toHaveBeenCalledTimes(2);
     expect(result.status).toBe('claimed');
+  });
+
+  it('批次讀取 primary metadata，避免逐一呼叫 locator probe', async () => {
+    const click = vi.fn(async () => undefined);
+    const onEvaluateAll = vi.fn();
+    const claimer = new RewardClaimer({ clock: () => START_TIME });
+
+    const result = await claimer.claimIfAvailable(
+      createPage({
+        primary: [
+          { visible: false },
+          { visible: true, click },
+        ],
+        onEvaluateAll,
+      }),
+      'streamer_batched',
+    );
+
+    expect(result.status).toBe('claimed');
+    expect(onEvaluateAll).toHaveBeenCalledOnce();
+    expect(click).toHaveBeenCalledOnce();
   });
 
   it('summary 有多個可點擊元素時不猜測要點擊哪一個', async () => {

@@ -19,6 +19,7 @@ FROM build AS smoke-test
 
 COPY eslint.config.js playwright.config.ts vitest.config.ts ./
 COPY config.example.yml ./
+COPY scripts ./scripts
 COPY test ./test
 RUN npm run lint \
     && npm run build \

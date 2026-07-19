@@ -20,13 +20,17 @@ async function createFixtureRoot(): Promise<string> {
 }
 
 describe('CgroupV2Reader', () => {
-  it('從 cgroup 根目錄讀取 memory/swap/pids/events', async () => {
+  it('從 cgroup 根目錄讀取 cpu/memory/swap/pids/events', async () => {
     const root = await createFixtureRoot();
     await writeFile(path.join(root, 'memory.current'), '123456789\n');
     await writeFile(path.join(root, 'memory.max'), '6442450944\n');
     await writeFile(path.join(root, 'memory.peak'), '234567890\n');
     await writeFile(path.join(root, 'memory.swap.current'), '111\n');
     await writeFile(path.join(root, 'pids.current'), '42\n');
+    await writeFile(
+      path.join(root, 'cpu.stat'),
+      'usage_usec 987654\nuser_usec 700000\nsystem_usec 287654\nnr_periods 12\n',
+    );
     await writeFile(
       path.join(root, 'memory.events'),
       'low 0\nhigh 2\nmax 1\noom 3\noom_kill 4\nunknown 9\n',
@@ -48,6 +52,11 @@ describe('CgroupV2Reader', () => {
       memoryPeakBytes: 234_567_890n,
       swapCurrentBytes: 111n,
       pidsCurrent: 42n,
+      cpu: {
+        usageUsec: 987_654n,
+        userUsec: 700_000n,
+        systemUsec: 287_654n,
+      },
       events: {
         high: 2n,
         max: 1n,
@@ -55,6 +64,18 @@ describe('CgroupV2Reader', () => {
         oomKill: 4n,
       },
     });
+  });
+
+  it('cpu.stat 缺少或 usage_usec 格式錯誤時視為不可用', async () => {
+    const root = await createFixtureRoot();
+    await writeFile(path.join(root, 'memory.current'), '100\n');
+    await writeFile(path.join(root, 'cpu.stat'), 'usage_usec invalid\nuser_usec 10\n');
+
+    const snapshot = await new CgroupV2Reader({
+      sysFsCgroupPath: root,
+    }).readSnapshot();
+
+    expect(snapshot.cpu).toBeUndefined();
   });
 
   it('memory.max 為 max 時視為不可用', async () => {

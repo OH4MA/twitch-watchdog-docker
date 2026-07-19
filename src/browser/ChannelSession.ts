@@ -202,6 +202,7 @@ export class DefaultChannelSession implements ChannelSession {
   private reloadFlight: Promise<void> | undefined;
   private nextPageRefreshAtMs: number | undefined;
   private lifecycleTail: Promise<void> = Promise.resolve();
+  private pageOperationTail: Promise<void> = Promise.resolve();
 
   public constructor(
     private readonly options: DefaultChannelSessionOptions,
@@ -322,7 +323,10 @@ export class DefaultChannelSession implements ChannelSession {
       return existingFlight;
     }
 
-    const flight = this.runHealthCheck();
+    const flight = this.runPageOperation(
+      'health',
+      async () => this.runHealthCheck(),
+    );
     this.healthFlight = flight;
     flight.then(
       () => {
@@ -345,7 +349,10 @@ export class DefaultChannelSession implements ChannelSession {
       return existingFlight;
     }
 
-    const flight = this.runRewardClaim();
+    const flight = this.runPageOperation(
+      'reward',
+      async () => this.runRewardClaim(),
+    );
     this.rewardFlight = flight;
     flight.then(
       () => {
@@ -424,6 +431,7 @@ export class DefaultChannelSession implements ChannelSession {
   private async runHealthCheck(): Promise<ChannelHealthResult> {
     const page = this.page;
     if (page === undefined) {
+      this.logMaintenanceSkipped('health', 'page_missing');
       return {
         healthy: false,
         reason:
@@ -484,7 +492,7 @@ export class DefaultChannelSession implements ChannelSession {
     }
 
     try {
-      await this.reloadPage(page, 'health_failure');
+      await this.reloadDuringPageOperation(page, 'health_failure');
     } catch (error: unknown) {
       safeLog(this.logger, 'warn', 'page_reload_failed', {
         channel: this.channel,
@@ -497,11 +505,6 @@ export class DefaultChannelSession implements ChannelSession {
   private async failSession(): Promise<void> {
     this.currentState = 'failed';
     this.clearTimers();
-
-    const rewardFlight = this.rewardFlight;
-    if (rewardFlight !== undefined) {
-      await Promise.allSettled([rewardFlight]);
-    }
 
     this.page = undefined;
     await this.closePageForCleanup('health_failure_threshold');
@@ -517,6 +520,7 @@ export class DefaultChannelSession implements ChannelSession {
       (this.currentState !== 'watching' &&
         this.currentState !== 'recovering')
     ) {
+      this.logMaintenanceSkipped('reward', 'page_unavailable');
       return {
         status: 'not_found',
         channel: this.channel,
@@ -546,7 +550,9 @@ export class DefaultChannelSession implements ChannelSession {
       };
     }
 
-    await this.handleRewardClaimResult(page, result);
+    if (this.shouldScheduleWork()) {
+      await this.handleRewardClaimResult(page, result);
+    }
     return result;
   }
 
@@ -609,7 +615,10 @@ export class DefaultChannelSession implements ChannelSession {
 
     try {
       this.notifyPageRefresh('reward_claim_failure_threshold');
-      await this.reloadPage(page, 'reward_claim_failure_threshold');
+      await this.reloadDuringPageOperation(
+        page,
+        'reward_claim_failure_threshold',
+      );
       this.consecutiveRewardFailures = 0;
       safeLog(this.logger, 'info', 'page_refreshed', {
         channel: this.channel,
@@ -788,10 +797,23 @@ export class DefaultChannelSession implements ChannelSession {
     this.playbackOptimizationTimer = setTimeout(() => {
       this.playbackOptimizationTimer = undefined;
       const page = this.page;
-      const work =
-        page === undefined || page.isClosed()
-          ? Promise.resolve()
-          : this.optimizePlayback(page);
+      let work: Promise<void>;
+      if (page === undefined || page.isClosed()) {
+        this.logMaintenanceSkipped('playback', 'page_unavailable');
+        work = Promise.resolve();
+      } else {
+        work = this.runPageOperation('playback', async () => {
+          if (
+            this.page !== page ||
+            page.isClosed() ||
+            !this.shouldScheduleWork()
+          ) {
+            this.logMaintenanceSkipped('playback', 'page_unavailable');
+            return;
+          }
+          await this.optimizePlayback(page);
+        });
+      }
       void work.finally(() => {
         this.schedulePlaybackOptimization();
       });
@@ -850,7 +872,33 @@ export class DefaultChannelSession implements ChannelSession {
       return existingFlight;
     }
 
-    const flight = this.runPageReload(page, reason);
+    const flight = this.runPageOperation('reload', async () => {
+      if (
+        this.page !== page ||
+        page.isClosed() ||
+        !this.shouldScheduleWork()
+      ) {
+        this.logMaintenanceSkipped('reload', 'page_unavailable');
+        return;
+      }
+      await this.runPageReload(page, reason);
+    });
+    return this.trackReloadFlight(flight);
+  }
+
+  private reloadDuringPageOperation(
+    page: Page,
+    reason: string,
+  ): Promise<void> {
+    if (this.reloadFlight !== undefined) {
+      this.logMaintenanceSkipped('reload', 'reload_already_queued');
+      return Promise.resolve();
+    }
+
+    return this.trackReloadFlight(this.runPageReload(page, reason));
+  }
+
+  private trackReloadFlight(flight: Promise<void>): Promise<void> {
     this.reloadFlight = flight;
     flight.then(
       () => {
@@ -868,7 +916,7 @@ export class DefaultChannelSession implements ChannelSession {
   }
 
   private async runPageReload(page: Page, reason: string): Promise<void> {
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await this.acceptContentWarningIfPresent(page, reason);
     await this.optimizePlayback(page);
     safeLog(this.logger, 'debug', 'page_reloaded', {
@@ -972,6 +1020,46 @@ export class DefaultChannelSession implements ChannelSession {
     } finally {
       release?.();
     }
+  }
+
+  private async runPageOperation<T>(
+    task: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const queuedAt = performance.now();
+    const previous = this.pageOperationTail;
+    let release: (() => void) | undefined;
+    this.pageOperationTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    await previous.catch(() => undefined);
+    const startedAt = performance.now();
+    let outcome = 'completed';
+    try {
+      return await operation();
+    } catch (error: unknown) {
+      outcome = 'failed';
+      throw error;
+    } finally {
+      const completedAt = performance.now();
+      safeLog(this.logger, 'debug', 'session_maintenance_completed', {
+        channel: this.channel,
+        task,
+        outcome,
+        queuedMs: Math.round(startedAt - queuedAt),
+        durationMs: Math.round(completedAt - startedAt),
+      });
+      release?.();
+    }
+  }
+
+  private logMaintenanceSkipped(task: string, reason: string): void {
+    safeLog(this.logger, 'debug', 'session_maintenance_skipped', {
+      channel: this.channel,
+      task,
+      reason,
+    });
   }
 }
 

@@ -24,6 +24,7 @@ export {
   CgroupV2ReadError,
   CgroupV2UnavailableError,
   type CgroupFileSystem,
+  type CgroupCpuStat,
   type CgroupMemoryEvents,
   type CgroupReaderAvailability,
   type CgroupSnapshot,

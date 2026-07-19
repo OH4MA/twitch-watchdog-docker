@@ -180,61 +180,87 @@ async function findClaimButton(page: Page): Promise<Locator | null> {
   const primaryCandidates = page.locator(
     COMMUNITY_POINTS_CLAIM_BUTTON_SELECTOR,
   );
-  const primaryCount = await primaryCandidates.count();
-  const primary = await firstClickable(primaryCandidates, primaryCount);
+  const primaryMetadata = await readCandidateMetadata(primaryCandidates);
+  const primaryIndex = primaryMetadata.findIndex(
+    (candidate) =>
+      candidate.visible &&
+      !candidate.disabled &&
+      !isDestructiveButton(candidate.className),
+  );
 
-  if (primary !== null || primaryCount > 0) {
-    return primary;
+  if (primaryIndex >= 0 || primaryMetadata.length > 0) {
+    return primaryIndex < 0 ? null : primaryCandidates.nth(primaryIndex);
   }
 
   const summaries = page.locator(COMMUNITY_POINTS_SUMMARY_SELECTOR);
-  const summaryCount = await summaries.count();
-  let fallback: Locator | null = null;
+  const fallbackCandidates = summaries.locator(REWARD_BUTTON_LIKE_SELECTOR);
+  const fallbackMetadata = await readCandidateMetadata(fallbackCandidates);
+  const clickableIndexes = fallbackMetadata.flatMap((candidate, index) =>
+    candidate.visible &&
+    !candidate.disabled &&
+    candidate.ariaLabel === null
+      ? [index]
+      : [],
+  );
 
-  for (let index = 0; index < summaryCount; index += 1) {
-    const candidates = summaries
-      .nth(index)
-      .locator(REWARD_BUTTON_LIKE_SELECTOR);
-    const candidateCount = await candidates.count();
-    for (
-      let candidateIndex = 0;
-      candidateIndex < candidateCount;
-      candidateIndex += 1
-    ) {
-      const candidate = candidates.nth(candidateIndex);
-      if (
-        (await candidate.isVisible()) &&
-        !(await candidate.isDisabled()) &&
-        (await candidate.getAttribute('aria-label')) === null
-      ) {
-        if (fallback !== null) {
-          return null;
-        }
-        fallback = candidate;
-      }
-    }
-  }
-
-  return fallback;
+  return clickableIndexes.length === 1
+    ? fallbackCandidates.nth(clickableIndexes[0]!)
+    : null;
 }
 
-async function firstClickable(
+interface RewardCandidateMetadata {
+  readonly visible: boolean;
+  readonly disabled: boolean;
+  readonly ariaLabel: string | null;
+  readonly className: string | null;
+}
+
+async function readCandidateMetadata(
   candidates: Locator,
-  count: number,
-): Promise<Locator | null> {
-  for (let index = 0; index < count; index += 1) {
-    const candidate = candidates.nth(index);
+): Promise<readonly RewardCandidateMetadata[]> {
+  return candidates.evaluateAll((elements) =>
+    elements.map((element) => {
+      interface BrowserElement {
+        readonly className?: unknown;
+        readonly disabled?: boolean;
+        getAttribute(name: string): string | null;
+        getBoundingClientRect(): {
+          readonly width: number;
+          readonly height: number;
+        };
+        getClientRects(): { readonly length: number };
+        closest(selector: string): BrowserElement | null;
+        matches(selector: string): boolean;
+      }
 
-    if (
-      (await candidate.isVisible()) &&
-      !(await candidate.isDisabled()) &&
-      !isDestructiveButton(await candidate.getAttribute('class'))
-    ) {
-      return candidate;
-    }
-  }
+      interface BrowserGlobal {
+        getComputedStyle(element: BrowserElement): {
+          readonly display: string;
+          readonly visibility: string;
+        };
+      }
 
-  return null;
+      const candidate = element as unknown as BrowserElement;
+      const style = (globalThis as unknown as BrowserGlobal)
+        .getComputedStyle(candidate);
+      const bounds = candidate.getBoundingClientRect();
+      const visible =
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        ((bounds.width > 0 && bounds.height > 0) ||
+          candidate.getClientRects().length > 0);
+
+      return {
+        visible,
+        disabled:
+          candidate.disabled === true ||
+          candidate.matches(':disabled') ||
+          candidate.closest('[aria-disabled="true"]') !== null,
+        ariaLabel: candidate.getAttribute('aria-label'),
+        className: candidate.getAttribute('class'),
+      };
+    }),
+  );
 }
 
 async function clickClaimButton(claimButton: Locator): Promise<void> {

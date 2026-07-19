@@ -64,6 +64,14 @@ export type ContentWarningAcceptResult =
   | 'accepted'
   | 'blocked';
 
+interface ChannelHealthSnapshot {
+  readonly loginRequired: boolean;
+  readonly error: boolean;
+  readonly offline: boolean;
+  readonly liveContent: boolean;
+  readonly unsupportedPlayerError: boolean;
+}
+
 export async function evaluateChannelHealth(
   page: Page,
   targetUrl: string,
@@ -77,20 +85,17 @@ export async function evaluateChannelHealth(
       return { healthy: false, reason: 'url_mismatch' };
     }
 
-    if (
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.loginRequired))
-    ) {
+    const snapshot = await readChannelHealthSnapshot(page);
+
+    if (snapshot.loginRequired) {
       return { healthy: false, reason: 'login_required' };
     }
 
-    if (
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.error)) ||
-      await hasUnsupportedPlayerError(page)
-    ) {
+    if (snapshot.error || snapshot.unsupportedPlayerError) {
       return { healthy: false, reason: 'error_page' };
     }
 
-    if (await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.offline))) {
+    if (snapshot.offline) {
       return { healthy: false, reason: 'offline' };
     }
 
@@ -105,9 +110,7 @@ export async function evaluateChannelHealth(
       return { healthy: false, reason: 'content_warning' };
     }
 
-    if (
-      await isVisible(page.locator(CHANNEL_HEALTH_SELECTORS.liveContent))
-    ) {
+    if (snapshot.liveContent) {
       return { healthy: true, reason: 'live' };
     }
 
@@ -149,25 +152,69 @@ async function isVisible(locator: Locator): Promise<boolean> {
   return locator.first().isVisible();
 }
 
-async function hasUnsupportedPlayerError(page: Page): Promise<boolean> {
-  try {
-    const playerText = (
-      await page
-      .locator(
-        [
-          '[data-a-target="player-error-message"]',
-          '[data-test-selector="video-player"]',
-          '[data-a-target="video-player"]',
-        ].join(', '),
-      )
-        .allTextContents()
-    ).join(' ');
-    return (
-      /This video is either unavailable or not supported in this browser/iu
-        .test(playerText) ||
-      /Error\s*#4000/iu.test(playerText)
-    );
-  } catch {
-    return false;
-  }
+async function readChannelHealthSnapshot(
+  page: Page,
+): Promise<ChannelHealthSnapshot> {
+  return page.evaluate((selectors) => {
+    interface BrowserElement {
+      readonly textContent: string | null;
+      getBoundingClientRect(): { readonly width: number; readonly height: number };
+      getClientRects(): { readonly length: number };
+    }
+
+    interface BrowserDocument {
+      querySelectorAll(selector: string): Iterable<BrowserElement>;
+    }
+
+    interface BrowserGlobal {
+      readonly document: BrowserDocument;
+      getComputedStyle(element: BrowserElement): {
+        readonly display: string;
+        readonly visibility: string;
+      };
+    }
+
+    const browserGlobal = globalThis as unknown as BrowserGlobal;
+    const isElementVisible = (element: BrowserElement): boolean => {
+      const style = browserGlobal.getComputedStyle(element);
+      if (style.display === 'none' || style.visibility === 'hidden') {
+        return false;
+      }
+
+      const bounds = element.getBoundingClientRect();
+      return (
+        (bounds.width > 0 && bounds.height > 0) ||
+        element.getClientRects().length > 0
+      );
+    };
+    const hasVisibleElement = (selector: string): boolean =>
+      Array.from(browserGlobal.document.querySelectorAll(selector)).some(
+        isElementVisible,
+      );
+    const playerText = Array.from(
+      browserGlobal.document.querySelectorAll(selectors.playerErrorText),
+    )
+      .map((element) => element.textContent ?? '')
+      .join(' ');
+
+    return {
+      loginRequired: hasVisibleElement(selectors.loginRequired),
+      error: hasVisibleElement(selectors.error),
+      offline: hasVisibleElement(selectors.offline),
+      liveContent: hasVisibleElement(selectors.liveContent),
+      unsupportedPlayerError:
+        /This video is either unavailable or not supported in this browser/iu
+          .test(playerText) || /Error\s*#4000/iu.test(playerText),
+    };
+  }, {
+    loginRequired: CHANNEL_HEALTH_SELECTORS.loginRequired,
+    error: CHANNEL_HEALTH_SELECTORS.error,
+    offline: CHANNEL_HEALTH_SELECTORS.offline,
+    liveContent: CHANNEL_HEALTH_SELECTORS.liveContent,
+    playerErrorText: [
+      '[data-a-target="player-error-message"]',
+      '[data-test-selector="video-player"]',
+      '[data-a-target="video-player"]',
+    ].join(', '),
+  });
 }

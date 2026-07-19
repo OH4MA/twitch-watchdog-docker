@@ -164,12 +164,20 @@ function createMockPage(input: {
     return null;
   });
   const screenshot = vi.fn(async () => Buffer.from('png-image'));
+  const evaluate = vi.fn(async () => ({
+    loginRequired: marker === 'loginRequired',
+    error: marker === 'error',
+    offline: marker === 'offline',
+    liveContent: marker === 'liveContent',
+    unsupportedPlayerError: false,
+  }));
 
   const page = {
     setDefaultNavigationTimeout,
     goto,
     reload,
     screenshot,
+    evaluate,
     url: () => currentUrl,
     isClosed: () => closed,
     locator,
@@ -237,20 +245,23 @@ function createRewardClaimer(
 
 function createLogger(): {
   readonly logger: ChannelSessionLogger;
+  readonly debug: ReturnType<typeof vi.fn>;
   readonly info: ReturnType<typeof vi.fn>;
   readonly warn: ReturnType<typeof vi.fn>;
   readonly error: ReturnType<typeof vi.fn>;
 } {
+  const debug = vi.fn();
   const info = vi.fn();
   const warn = vi.fn();
   const error = vi.fn();
   return {
     logger: {
-      debug: vi.fn(),
+      debug,
       info,
       warn,
       error,
     },
+    debug,
     info,
     warn,
     error,
@@ -376,11 +387,13 @@ describe('DefaultChannelSession', () => {
     const mockPage = createMockPage({ marker: 'liveContent' });
     const browser = createBrowserManager(mockPage.page);
     const rewards = createRewardClaimer();
+    const logs = createLogger();
     const session = new DefaultChannelSession({
       channel: CHANNEL,
       config: createConfig(),
       browserManager: browser.manager,
       rewardClaimer: rewards.claimer,
+      logger: logs.logger,
     });
     await session.start();
 
@@ -389,8 +402,27 @@ describe('DefaultChannelSession', () => {
       reason: 'live',
     });
     expect(session.state).toBe('watching');
+    expect(logs.debug).toHaveBeenCalledWith(
+      'session_maintenance_completed',
+      expect.objectContaining({
+        channel: CHANNEL,
+        task: 'health',
+        outcome: 'completed',
+        queuedMs: expect.any(Number),
+        durationMs: expect.any(Number),
+      }),
+    );
 
     await session.stop('test_complete');
+    await session.checkHealth();
+    expect(logs.debug).toHaveBeenCalledWith(
+      'session_maintenance_skipped',
+      {
+        channel: CHANNEL,
+        task: 'health',
+        reason: 'page_missing',
+      },
+    );
   });
 
   it('start 遇到 Twitch 內容警示時會先按 Start Watching 再進入 watching', async () => {
@@ -808,7 +840,7 @@ describe('DefaultChannelSession', () => {
     await session.stop('test_complete');
   });
 
-  it('timer 工作不重入，stop 會清除 timer 並等待當前工作', async () => {
+  it('timer 工作不重入，且同一頁面的維護操作依序執行', async () => {
     vi.useFakeTimers();
     const mockPage = createMockPage({ marker: 'liveContent' });
     const browser = createBrowserManager(mockPage.page);
@@ -829,27 +861,30 @@ describe('DefaultChannelSession', () => {
     await session.start();
 
     vi.advanceTimersByTime(6_000);
-    await Promise.resolve();
-    expect(healthEvaluator).toHaveBeenCalledOnce();
-    expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(healthEvaluator).toHaveBeenCalledOnce();
+    });
+    expect(rewards.claimIfAvailable).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(5_000);
     await Promise.resolve();
     expect(healthEvaluator).toHaveBeenCalledOnce();
-    expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
-
-    const stopPromise = session.stop('shutdown');
-    await Promise.resolve();
-    expect(browser.closePage).not.toHaveBeenCalled();
+    expect(rewards.claimIfAvailable).not.toHaveBeenCalled();
 
     health.resolve({ healthy: true, reason: 'live' });
+    await vi.waitFor(() => {
+      expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
+    });
+
+    await expect(session.stop('shutdown')).resolves.toBeUndefined();
+    expect(browser.closePage).toHaveBeenCalledOnce();
+
     reward.resolve({
       status: 'not_found',
       channel: CHANNEL,
       checkedAt: NOW.toISOString(),
     });
-    await stopPromise;
-    expect(browser.closePage).toHaveBeenCalledOnce();
+    await Promise.resolve();
 
     vi.advanceTimersByTime(5_000);
     await Promise.resolve();
@@ -973,6 +1008,9 @@ describe('DefaultChannelSession', () => {
     await expect(session.refreshNow()).resolves.toBe(true);
 
     expect(mockPage.reload).toHaveBeenCalledOnce();
+    expect(mockPage.reload).toHaveBeenCalledWith({
+      waitUntil: 'domcontentloaded',
+    });
     await vi.waitFor(() => {
       expect(onPageRefresh).toHaveBeenCalledWith({
         channel: CHANNEL,
@@ -1003,8 +1041,9 @@ describe('DefaultChannelSession', () => {
     await session.start();
 
     vi.advanceTimersByTime(61_000);
-    await Promise.resolve();
-    expect(mockPage.reload).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(mockPage.reload).toHaveBeenCalledOnce();
+    });
 
     const stopPromise = session.stop('shutdown');
     await Promise.resolve();

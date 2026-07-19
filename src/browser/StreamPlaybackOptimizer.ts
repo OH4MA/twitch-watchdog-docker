@@ -20,6 +20,11 @@ export interface PlaybackOptimizationResult {
   readonly selectedQuality?: string;
 }
 
+interface VideoPlaybackState {
+  readonly muted: boolean;
+  readonly videoHeight?: number;
+}
+
 export interface StreamPlaybackOptimizer {
   optimize(page: Page, channel: string): Promise<PlaybackOptimizationResult>;
 }
@@ -40,11 +45,27 @@ implements StreamPlaybackOptimizer {
     page: Page,
     channel: string,
   ): Promise<PlaybackOptimizationResult> {
-    const muted = this.config.muteAudio
-      ? await this.muteVideo(page, channel)
-      : false;
+    const videoState = await this.prepareVideo(page, channel);
+    const muted = this.config.muteAudio ? videoState.muted : false;
     if (this.config.streamQuality === 'auto') {
       return { muted };
+    }
+
+    if (
+      isRequestedQualityActive(
+        videoState.videoHeight,
+        this.config.streamQuality,
+      )
+    ) {
+      safeLog(this.logger, 'debug', 'stream_quality_already_selected', {
+        channel,
+        requestedQuality: this.config.streamQuality,
+        videoHeight: videoState.videoHeight,
+      });
+      return {
+        muted,
+        selectedQuality: this.config.streamQuality,
+      };
     }
 
     const selectedQuality = await this.selectQuality(
@@ -65,29 +86,40 @@ implements StreamPlaybackOptimizer {
     };
   }
 
-  private async muteVideo(page: Page, channel: string): Promise<boolean> {
+  private async prepareVideo(
+    page: Page,
+    channel: string,
+  ): Promise<VideoPlaybackState> {
     try {
       const video = page.locator('video').first();
       if ((await video.count()) === 0) {
-        return false;
+        return { muted: false };
       }
-      return await video.evaluate((element) => {
+      return await video.evaluate((element, shouldMute) => {
         const video = element as unknown as {
           muted: boolean;
           volume: number;
           disablePictureInPicture?: boolean;
+          videoHeight?: number;
         };
-        video.muted = true;
-        video.volume = 0;
-        video.disablePictureInPicture = true;
-        return video.muted && video.volume === 0;
-      });
+        if (shouldMute) {
+          video.muted = true;
+          video.volume = 0;
+          video.disablePictureInPicture = true;
+        }
+        return {
+          muted: shouldMute && video.muted && video.volume === 0,
+          ...(typeof video.videoHeight === 'number' && video.videoHeight > 0
+            ? { videoHeight: video.videoHeight }
+            : {}),
+        };
+      }, this.config.muteAudio);
     } catch (error: unknown) {
       safeLog(this.logger, 'debug', 'stream_mute_skipped', {
         channel,
         error: safeErrorMessage(error),
       });
-      return false;
+      return { muted: false };
     }
   }
 
@@ -260,6 +292,17 @@ export function chooseQuality(
       label.includes(quality.toLocaleLowerCase('en-US')),
     ),
   );
+}
+
+function isRequestedQualityActive(
+  videoHeight: number | undefined,
+  requestedQuality: Exclude<BrowserConfig['streamQuality'], 'auto'>,
+): boolean {
+  if (videoHeight === undefined) {
+    return false;
+  }
+  const requestedHeight = Number.parseInt(requestedQuality, 10);
+  return Math.abs(videoHeight - requestedHeight) <= 16;
 }
 
 function safeErrorMessage(error: unknown): string {

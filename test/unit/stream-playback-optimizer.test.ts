@@ -14,7 +14,7 @@ describe('StreamPlaybackOptimizer', () => {
   });
 
   it('靜音並選擇目標畫質', async () => {
-    const videoEvaluate = vi.fn(async () => true);
+    const videoEvaluate = vi.fn(async () => ({ muted: true }));
     const settingsClick = vi.fn(async () => undefined);
     const qualityMenuClick = vi.fn(async () => undefined);
     const qualityOptionClick = vi.fn(async () => undefined);
@@ -56,8 +56,8 @@ describe('StreamPlaybackOptimizer', () => {
     };
     const clickedIndexes: number[] = [];
     const page = createPage({
-      videoEvaluate: vi.fn(async (callback) =>
-        callback(videoState)),
+      videoEvaluate: vi.fn(async (callback, shouldMute) =>
+        callback(videoState, shouldMute)),
       settingsClick: vi.fn(async () => undefined),
       qualityMenuClick: vi.fn(async () => undefined),
       qualityOptionClick: vi.fn(async () => undefined),
@@ -83,7 +83,7 @@ describe('StreamPlaybackOptimizer', () => {
 
 
   it('auto 畫質只靜音，不開啟設定選單', async () => {
-    const videoEvaluate = vi.fn(async () => true);
+    const videoEvaluate = vi.fn(async () => ({ muted: true }));
     const settingsClick = vi.fn(async () => undefined);
     const page = createPage({
       videoEvaluate,
@@ -105,7 +105,7 @@ describe('StreamPlaybackOptimizer', () => {
 
   it('播放器元素不存在時立即略過，不觸發 Playwright 等待', async () => {
     const page = createPage({
-      videoEvaluate: vi.fn(async () => true),
+      videoEvaluate: vi.fn(async () => ({ muted: true })),
       videoCount: 0,
       settingsClick: vi.fn(async () => undefined),
       qualityMenuClick: vi.fn(async () => undefined),
@@ -120,6 +120,35 @@ describe('StreamPlaybackOptimizer', () => {
     await expect(optimizer.optimize(page, 'channel')).resolves.toEqual({
       muted: false,
     });
+  });
+
+  it('目前解析度符合目標時略過設定選單', async () => {
+    const settingsClick = vi.fn(async () => undefined);
+    const page = createPage({
+      videoEvaluate: vi.fn(async () => ({
+        muted: true,
+        videoHeight: 360,
+      })),
+      settingsClick,
+      qualityMenuClick: vi.fn(async () => undefined),
+      qualityOptionClick: vi.fn(async () => undefined),
+      qualityLabels: [],
+    });
+    const logger = { debug: vi.fn(), info: vi.fn() };
+    const optimizer = new DefaultStreamPlaybackOptimizer(
+      { muteAudio: true, streamQuality: '360p' },
+      logger,
+    );
+
+    await expect(optimizer.optimize(page, 'channel')).resolves.toEqual({
+      muted: true,
+      selectedQuality: '360p',
+    });
+    expect(settingsClick).not.toHaveBeenCalled();
+    expect(logger.debug).toHaveBeenCalledWith(
+      'stream_quality_already_selected',
+      expect.objectContaining({ videoHeight: 360 }),
+    );
   });
 });
 
