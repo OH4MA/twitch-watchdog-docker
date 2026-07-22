@@ -17,6 +17,7 @@ import type {
   BrowserManagerConfig,
   BrowserManagerDependencies,
   BrowserManagerLogger,
+  BrowserNavigationOutcome,
   BrowserPageAdapter,
   BrowserRestartedEvent,
   BrowserRestartedObserver,
@@ -42,6 +43,7 @@ export type {
   BrowserManagerConfig,
   BrowserManagerDependencies,
   BrowserManagerLogger,
+  BrowserNavigationOutcome,
   BrowserPageAdapter,
   BrowserRestartedEvent,
   BrowserRestartedObserver,
@@ -59,8 +61,26 @@ const DEFAULT_CHANNEL_CRASH_RECYCLE_THRESHOLD = 2;
 const DEFAULT_CHANNEL_CRASH_WINDOW_MS = 5 * 60_000;
 const DEFAULT_GLOBAL_PAGE_CRASH_RECYCLE_THRESHOLD = 3;
 const DEFAULT_GLOBAL_PAGE_CRASH_WINDOW_MS = 10 * 60_000;
+const DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD = 2;
+const DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_WINDOW_MS = 5 * 60_000;
+const DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD = 3;
+const DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_WINDOW_MS = 5 * 60_000;
 const DEFAULT_BROWSER_FAILURE_CONTAINER_THRESHOLD = 3;
 const DEFAULT_BROWSER_FAILURE_WINDOW_MS = 10 * 60_000;
+
+interface NavigationTimeoutEntry {
+  readonly channel: string;
+  readonly timestampMs: number;
+}
+
+interface NavigationTimeoutRecoveryDecision {
+  readonly reason:
+    | 'channel_navigation_timeout_loop'
+    | 'global_navigation_timeout_loop';
+  readonly channel: string;
+  readonly channelTimeoutCount: number;
+  readonly globalTimeoutCount: number;
+}
 
 export class BrowserTerminationError extends Error {
   public constructor(message: string) {
@@ -101,6 +121,7 @@ export class DefaultBrowserManager implements BrowserManager {
   private unsubscribeBrowser: (() => void) | undefined;
   private readonly pages = new Map<string, PageEntry>();
   private operationTail: Promise<void> = Promise.resolve();
+  private navigationOutcomeTail: Promise<void> = Promise.resolve();
   private restartFlight: Promise<void> | undefined;
   private automaticRestartFlight: Promise<void> | undefined;
   private automaticRestartToken: symbol | undefined;
@@ -112,6 +133,9 @@ export class DefaultBrowserManager implements BrowserManager {
   private pendingForcedRecycleReason: string | undefined;
   private readonly channelCrashTimestamps = new Map<string, number[]>();
   private globalPageCrashTimestamps: number[] = [];
+  private readonly channelNavigationTimeoutTimestamps =
+    new Map<string, number[]>();
+  private globalNavigationTimeouts: NavigationTimeoutEntry[] = [];
   private browserFailureTimestamps: number[] = [];
 
   public constructor(
@@ -342,6 +366,34 @@ export class DefaultBrowserManager implements BrowserManager {
     return this.pages.size;
   }
 
+  public reportNavigationOutcomes(
+    outcomes: readonly BrowserNavigationOutcome[],
+  ): Promise<void> {
+    if (outcomes.length === 0) {
+      return Promise.resolve();
+    }
+
+    const reportedRecoveryEpoch = this.recoveryEpoch;
+    const outcomeSnapshot = [...outcomes];
+    const result = this.navigationOutcomeTail.then(
+      () =>
+        this.processNavigationOutcomes(
+          outcomeSnapshot,
+          reportedRecoveryEpoch,
+        ),
+      () =>
+        this.processNavigationOutcomes(
+          outcomeSnapshot,
+          reportedRecoveryEpoch,
+        ),
+    );
+    this.navigationOutcomeTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
   private async restartManually(): Promise<void> {
     const invalidatedChannels: string[] = [];
     let terminationConfirmed = false;
@@ -444,6 +496,7 @@ export class DefaultBrowserManager implements BrowserManager {
       this.browser = browser;
       this.context = context;
       this.unsubscribeBrowser = unsubscribeBrowser;
+      this.clearNavigationTimeouts();
     } catch (error: unknown) {
       unsubscribeBrowser?.();
       await this.closeResourcesUnlocked(
@@ -1050,6 +1103,129 @@ export class DefaultBrowserManager implements BrowserManager {
         channel,
       });
     });
+  }
+
+  private async processNavigationOutcomes(
+    outcomes: readonly BrowserNavigationOutcome[],
+    reportedRecoveryEpoch: number,
+  ): Promise<void> {
+    let decision: NavigationTimeoutRecoveryDecision | undefined;
+    let escalateToContainer = false;
+
+    await this.runExclusive(async () => {
+      if (
+        !this.desiredRunning ||
+        this.browser === undefined ||
+        this.context === undefined ||
+        reportedRecoveryEpoch !== this.recoveryEpoch
+      ) {
+        return;
+      }
+
+      decision = this.recordNavigationOutcomes(outcomes);
+      if (decision === undefined) {
+        return;
+      }
+
+      this.clearNavigationTimeouts();
+      escalateToContainer = this.recordBrowserFailure();
+    });
+
+    if (decision === undefined) {
+      return;
+    }
+
+    this.logger.warn('browser_navigation_failure_recycle_requested', {
+      ...decision,
+    });
+
+    if (escalateToContainer) {
+      this.requestFatalRecovery('browser_navigation_failure_loop', {
+        ...decision,
+      });
+      return;
+    }
+
+    try {
+      await this.restart();
+    } catch (error: unknown) {
+      this.logger.error('browser_navigation_failure_recycle_failed', {
+        reason: decision.reason,
+        error: this.safeError(error),
+      });
+      this.requestFatalRecovery('browser_navigation_failure_recycle_failed', {
+        reason: decision.reason,
+        channel: decision.channel,
+      });
+    }
+  }
+
+  private recordNavigationOutcomes(
+    outcomes: readonly BrowserNavigationOutcome[],
+  ): NavigationTimeoutRecoveryDecision | undefined {
+    const nowMs = this.now();
+    this.globalNavigationTimeouts = this.globalNavigationTimeouts.filter(
+      (entry) =>
+        nowMs - entry.timestampMs <=
+        DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_WINDOW_MS,
+    );
+
+    for (const outcome of outcomes) {
+      if (outcome.status === 'succeeded') {
+        this.channelNavigationTimeoutTimestamps.delete(outcome.channel);
+        this.globalNavigationTimeouts =
+          this.globalNavigationTimeouts.filter(
+            (entry) => entry.channel !== outcome.channel,
+          );
+        continue;
+      }
+
+      const channelTimes = evictOldTimestamps(
+        this.channelNavigationTimeoutTimestamps.get(outcome.channel) ?? [],
+        nowMs,
+        DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_WINDOW_MS,
+      );
+      channelTimes.push(nowMs);
+      this.channelNavigationTimeoutTimestamps.set(
+        outcome.channel,
+        channelTimes,
+      );
+      this.globalNavigationTimeouts.push({
+        channel: outcome.channel,
+        timestampMs: nowMs,
+      });
+
+      const channelNeedsRecycle =
+        channelTimes.length >=
+        DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD;
+      const globalNeedsRecycle =
+        this.globalNavigationTimeouts.length >=
+        DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD;
+
+      this.logger.debug('browser_navigation_failure_recorded', {
+        channel: outcome.channel,
+        channelTimeoutCount: channelTimes.length,
+        globalTimeoutCount: this.globalNavigationTimeouts.length,
+      });
+
+      if (channelNeedsRecycle || globalNeedsRecycle) {
+        return {
+          reason: channelNeedsRecycle
+            ? 'channel_navigation_timeout_loop'
+            : 'global_navigation_timeout_loop',
+          channel: outcome.channel,
+          channelTimeoutCount: channelTimes.length,
+          globalTimeoutCount: this.globalNavigationTimeouts.length,
+        };
+      }
+    }
+
+    return undefined;
+  }
+
+  private clearNavigationTimeouts(): void {
+    this.channelNavigationTimeoutTimestamps.clear();
+    this.globalNavigationTimeouts = [];
   }
 
   /**

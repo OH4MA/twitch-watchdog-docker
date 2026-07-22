@@ -403,12 +403,16 @@ describe('DefaultSessionManager', () => {
     );
     const logger = createLogger();
     const sleeps: number[] = [];
+    const navigationOutcomes: unknown[] = [];
     const manager = new DefaultSessionManager(factory, {
       logger,
       startRetryAttempts: 1,
       startRetryDelayMs: 2_000,
       sleep: async (milliseconds) => {
         sleeps.push(milliseconds);
+      },
+      onNavigationOutcomes: async (outcomes) => {
+        navigationOutcomes.push(...outcomes);
       },
     });
 
@@ -419,6 +423,9 @@ describe('DefaultSessionManager', () => {
     expect(failed.stop).toHaveBeenCalledWith('start_failed');
     expect(healthy.start).toHaveBeenCalledOnce();
     expect(sleeps).toEqual([2_000]);
+    expect(navigationOutcomes).toEqual([
+      { channel: 'channel', status: 'succeeded' },
+    ]);
     expect(logger.warn).toHaveBeenCalledWith(
       'session_start_retry_scheduled',
       expect.objectContaining({
@@ -428,6 +435,72 @@ describe('DefaultSessionManager', () => {
       }),
     );
     expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('導覽短重試仍逾時時只在最終失敗後回報一次', async () => {
+    const events: string[] = [];
+    const timeoutError =
+      'page.goto: Timeout 30000ms exceeded.\nCall log:\n' +
+      '  - navigating to "https://www.twitch.tv/channel", waiting until "domcontentloaded"';
+    const factory = createFactory((_channel, creationIndex) =>
+      createSession('channel', {
+        onStart: async () => {
+          throw new Error(timeoutError);
+        },
+        onStop: async () => {
+          events.push(`stop:${creationIndex}`);
+        },
+      }));
+    const navigationOutcomes: unknown[] = [];
+    const manager = new DefaultSessionManager(factory, {
+      startRetryAttempts: 1,
+      startRetryDelayMs: 0,
+      onNavigationOutcomes: async (outcomes) => {
+        events.push('observer');
+        navigationOutcomes.push(...outcomes);
+      },
+    });
+
+    await manager.reconcile(['channel']);
+
+    expect(manager.getActiveChannels()).toEqual([]);
+    expect(factory.create).toHaveBeenCalledTimes(2);
+    expect(events).toEqual(['stop:0', 'stop:1', 'observer']);
+    expect(navigationOutcomes).toEqual([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+  });
+
+  it('非導覽逾時的啟動失敗不回報 navigation outcome', async () => {
+    const onNavigationOutcomes = vi.fn();
+    const manager = new DefaultSessionManager(
+      createFactory(() =>
+        createSession('channel', {
+          onStart: async () => {
+            throw new Error('authentication failed');
+          },
+        })),
+      { onNavigationOutcomes },
+    );
+
+    await manager.reconcile(['channel']);
+
+    expect(manager.getActiveChannels()).toEqual([]);
+    expect(onNavigationOutcomes).not.toHaveBeenCalled();
+  });
+
+  it('navigation outcome observer 可在 reconcile 鎖外失效 session', async () => {
+    const session = createSession('channel');
+    const manager = new DefaultSessionManager(createFactory(() => session), {
+      onNavigationOutcomes: async () => {
+        await manager.invalidate('channel', 'browser_restarted');
+      },
+    });
+
+    await manager.reconcile(['channel']);
+
+    expect(manager.getActiveChannels()).toEqual([]);
+    expect(session.stop).toHaveBeenCalledWith('browser_restarted');
   });
 
   it('新增多個 session 時會在後續啟動前套用間隔', async () => {

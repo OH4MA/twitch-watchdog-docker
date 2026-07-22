@@ -13,6 +13,7 @@ export {
   type BrowserManagerConfig,
   type BrowserManagerDependencies,
   type BrowserManagerLogger,
+  type BrowserNavigationOutcome,
   type BrowserPageAdapter,
 } from './BrowserManager.js';
 export {

@@ -187,6 +187,8 @@ export function createDefaultRuntime(
       60_000,
       config.browser.navigationTimeoutMs * 2,
     ),
+    onNavigationOutcomes: (outcomes) =>
+      browserManager.reportNavigationOutcomes(outcomes),
   });
   sessionManagerReference.current = sessionManager;
 

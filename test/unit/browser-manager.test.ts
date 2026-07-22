@@ -1052,6 +1052,187 @@ describe('DefaultBrowserManager', () => {
     expect(launcher.launch).toHaveBeenCalledTimes(3);
   });
 
+  it('同一 channel 連續兩次導覽逾時會回收 browser', async () => {
+    const firstBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const secondBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const launcher = new MockLauncher([firstBrowser, secondBrowser]);
+    const logger = createLogger();
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher,
+      logger,
+    });
+    await manager.start();
+
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+
+    expect(launcher.launch).toHaveBeenCalledOnce();
+
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+
+    expect(launcher.launch).toHaveBeenCalledTimes(2);
+    expect(firstBrowser.close).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'browser_navigation_failure_recycle_requested',
+      {
+        reason: 'channel_navigation_timeout_loop',
+        channel: 'channel',
+        channelTimeoutCount: 2,
+        globalTimeoutCount: 2,
+      },
+    );
+  });
+
+  it('任一成功導覽會清除該 channel 的逾時計數', async () => {
+    const firstBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const secondBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const launcher = new MockLauncher([firstBrowser, secondBrowser]);
+    const manager = new DefaultBrowserManager(createConfig(), { launcher });
+    await manager.start();
+
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'succeeded' },
+    ]);
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+
+    expect(launcher.launch).toHaveBeenCalledOnce();
+
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+
+    expect(launcher.launch).toHaveBeenCalledTimes(2);
+  });
+
+  it('不同 channel 的三次導覽逾時會以全域門檻回收 browser', async () => {
+    const firstBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const secondBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const launcher = new MockLauncher([firstBrowser, secondBrowser]);
+    const logger = createLogger();
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher,
+      logger,
+    });
+    await manager.start();
+
+    await manager.reportNavigationOutcomes([
+      { channel: 'first', status: 'timed_out' },
+      { channel: 'second', status: 'timed_out' },
+      { channel: 'third', status: 'timed_out' },
+    ]);
+
+    expect(launcher.launch).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'browser_navigation_failure_recycle_requested',
+      {
+        reason: 'global_navigation_timeout_loop',
+        channel: 'third',
+        channelTimeoutCount: 1,
+        globalTimeoutCount: 3,
+      },
+    );
+  });
+
+  it('超出五分鐘視窗的導覽逾時不會觸發回收', async () => {
+    let clock = 0;
+    const browser = new MockBrowserAdapter(new MockContextAdapter());
+    const launcher = new MockLauncher([browser]);
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher,
+      now: () => clock,
+    });
+    await manager.start();
+
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+    clock = 5 * 60_000 + 1;
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+
+    expect(launcher.launch).toHaveBeenCalledOnce();
+  });
+
+  it('回收後忽略舊 recovery epoch 排隊中的 navigation outcome', async () => {
+    const firstBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const secondBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const launcher = new MockLauncher([firstBrowser, secondBrowser]);
+    const logger = createLogger();
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher,
+      logger,
+    });
+    await manager.start();
+    await manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+
+    const recycle = manager.reportNavigationOutcomes([
+      { channel: 'channel', status: 'timed_out' },
+    ]);
+    const staleBatch = manager.reportNavigationOutcomes([
+      { channel: 'first', status: 'timed_out' },
+      { channel: 'second', status: 'timed_out' },
+      { channel: 'third', status: 'timed_out' },
+    ]);
+    await Promise.all([recycle, staleBatch]);
+
+    expect(launcher.launch).toHaveBeenCalledTimes(2);
+    expect(logger.debug).not.toHaveBeenCalledWith(
+      'browser_navigation_failure_recorded',
+      expect.objectContaining({ channel: 'first' }),
+    );
+  });
+
+  it('短時間三次 navigation failure browser recovery 會要求 container restart', async () => {
+    let clock = 0;
+    const firstBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const secondBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const thirdBrowser = new MockBrowserAdapter(new MockContextAdapter());
+    const launcher = new MockLauncher([
+      firstBrowser,
+      secondBrowser,
+      thirdBrowser,
+    ]);
+    const onFatalRecovery = vi.fn();
+    const manager = new DefaultBrowserManager(createConfig(), {
+      launcher,
+      now: () => clock,
+      browserFailureContainerThreshold: 3,
+      browserFailureWindowMs: 10 * 60_000,
+      onFatalRecovery,
+    });
+    await manager.start();
+
+    for (let recovery = 1; recovery <= 3; recovery += 1) {
+      clock = recovery * 1_000;
+      await manager.reportNavigationOutcomes([
+        { channel: 'channel', status: 'timed_out' },
+      ]);
+      await manager.reportNavigationOutcomes([
+        { channel: 'channel', status: 'timed_out' },
+      ]);
+    }
+
+    await vi.waitFor(() => {
+      expect(onFatalRecovery).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: 'browser_navigation_failure_loop',
+        }),
+      );
+    });
+    expect(launcher.launch).toHaveBeenCalledTimes(3);
+  });
+
   it('createPage 進行中呼叫 stop 時會等待建立完成後再清理', async () => {
     const page = new MockPageAdapter('delayed');
     const context = new MockContextAdapter();

@@ -9,6 +9,7 @@ import type {
   ChannelSessionPointsResult,
   ChannelSessionRefreshStatus,
 } from '../browser/ChannelSession.js';
+import type { BrowserNavigationOutcome } from '../browser/BrowserManager.js';
 
 export type {
   ChannelSession,
@@ -61,6 +62,9 @@ export type SessionChannelPointsResult =
 
 export type SessionManagerLogger = Pick<Logger, 'debug' | 'error' | 'warn'>;
 export type SessionManagerSleep = (milliseconds: number) => Promise<void>;
+export type SessionNavigationOutcomeObserver = (
+  outcomes: readonly BrowserNavigationOutcome[],
+) => Promise<void> | void;
 
 export interface SessionManagerDependencies {
   readonly logger?: SessionManagerLogger;
@@ -69,6 +73,7 @@ export interface SessionManagerDependencies {
   readonly startRetryDelayMs?: number;
   readonly startStaggerMs?: number;
   readonly sessionOperationTimeoutMs?: number;
+  readonly onNavigationOutcomes?: SessionNavigationOutcomeObserver;
 }
 
 const NOOP_LOGGER: SessionManagerLogger = {
@@ -99,6 +104,9 @@ export class DefaultSessionManager implements SessionManager {
   private readonly startRetryDelayMs: number;
   private readonly startStaggerMs: number;
   private readonly sessionOperationTimeoutMs: number;
+  private readonly onNavigationOutcomes:
+    | SessionNavigationOutcomeObserver
+    | undefined;
   private operationTail: Promise<void> = Promise.resolve();
 
   public constructor(
@@ -124,10 +132,12 @@ export class DefaultSessionManager implements SessionManager {
       dependencies.sessionOperationTimeoutMs,
       DEFAULT_SESSION_OPERATION_TIMEOUT_MS,
     );
+    this.onNavigationOutcomes = dependencies.onNavigationOutcomes;
   }
 
   public async reconcile(activeChannels: readonly string[]): Promise<void> {
     const desiredChannels = uniqueChannels(activeChannels);
+    const navigationOutcomes: BrowserNavigationOutcome[] = [];
     const startedAtMs = Date.now();
     this.safeLog('debug', 'session_reconcile_started', {
       desiredChannels,
@@ -159,7 +169,10 @@ export class DefaultSessionManager implements SessionManager {
           await this.sleep(this.startStaggerMs);
         }
 
-        await this.startSession(channel);
+        const navigationOutcome = await this.startSession(channel);
+        if (navigationOutcome !== undefined) {
+          navigationOutcomes.push(navigationOutcome);
+        }
         if (this.sessions.has(channel)) {
           startedCount += 1;
         }
@@ -175,6 +188,8 @@ export class DefaultSessionManager implements SessionManager {
         durationMs: Date.now() - startedAtMs,
       });
     });
+
+    await this.notifyNavigationOutcomes(navigationOutcomes);
   }
 
   public async stopAll(reason: string): Promise<void> {
@@ -310,7 +325,9 @@ export class DefaultSessionManager implements SessionManager {
     return results;
   }
 
-  private async startSession(channel: string): Promise<void> {
+  private async startSession(
+    channel: string,
+  ): Promise<BrowserNavigationOutcome | undefined> {
     for (let attempt = 1; attempt <= this.maxStartAttempts; attempt += 1) {
       let session: ChannelSession | undefined;
       const startedAtMs = Date.now();
@@ -333,7 +350,7 @@ export class DefaultSessionManager implements SessionManager {
           attempt,
           durationMs: Date.now() - startedAtMs,
         });
-        return;
+        return { channel, status: 'succeeded' };
       } catch (error: unknown) {
         const safeError = safeErrorMessage(error);
 
@@ -356,7 +373,9 @@ export class DefaultSessionManager implements SessionManager {
             channel,
             error: safeError,
           });
-          return;
+          return isNavigationTimeoutError(safeError)
+            ? { channel, status: 'timed_out' }
+            : undefined;
         }
 
         this.safeLog('warn', 'session_start_retry_scheduled', {
@@ -370,6 +389,25 @@ export class DefaultSessionManager implements SessionManager {
           await this.sleep(this.startRetryDelayMs);
         }
       }
+    }
+
+    return undefined;
+  }
+
+  private async notifyNavigationOutcomes(
+    outcomes: readonly BrowserNavigationOutcome[],
+  ): Promise<void> {
+    const observer = this.onNavigationOutcomes;
+    if (observer === undefined || outcomes.length === 0) {
+      return;
+    }
+
+    try {
+      await observer(outcomes);
+    } catch (error: unknown) {
+      this.safeLog('warn', 'session_navigation_outcome_observer_failed', {
+        error: safeErrorMessage(error),
+      });
     }
   }
 
@@ -548,6 +586,10 @@ function isRetriableSessionStartError(message: string): boolean {
     /page .*closed/iu.test(message) ||
     /page\.goto: Timeout \d+ms exceeded/iu.test(message) ||
     /Browser Manager 尚未啟動/iu.test(message);
+}
+
+function isNavigationTimeoutError(message: string): boolean {
+  return /page\.goto: Timeout \d+ms exceeded/iu.test(message);
 }
 
 function safeErrorMessage(error: unknown): string {

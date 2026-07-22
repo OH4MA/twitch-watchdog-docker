@@ -8,6 +8,7 @@ export type {
   SessionManagerDependencies,
   SessionManagerLogger,
   SessionManagerSleep,
+  SessionNavigationOutcomeObserver,
   SessionChannelPointsResult,
   SessionRefreshResult,
   SessionScreenshot,

@@ -86,6 +86,16 @@ export interface BrowserManager {
   getPageCount(): number;
 }
 
+export type BrowserNavigationOutcome =
+  | {
+      readonly channel: string;
+      readonly status: 'succeeded';
+    }
+  | {
+      readonly channel: string;
+      readonly status: 'timed_out';
+    };
+
 export type BrowserInvalidationReason =
   | 'page_crashed'
   | 'page_closed'

@@ -81,8 +81,10 @@ discord:
 - `max_concurrent_streams`：最大同時觀看數。
 - `storage_state_path`：容器內 Playwright storageState 路徑。
 - `browser.stream_quality`：預設 `160p`；設為 `auto` 可停用強制畫質。
-- `browser.page_refresh_interval_seconds`：預設 `0`（關閉定時重整以降低 Firefox 記憶體壓力）；設正值可啟用定時重整並依頻道錯開。手動 `/refresh_now` 仍可用。
-  Defaults to `0` (scheduled refresh off to reduce Firefox memory pressure). Positive values re-enable staggered scheduled refresh. Manual `/refresh_now` remains available.
+- `browser.page_refresh_interval_seconds`：預設 `0`（關閉定時重整以降低 Firefox 記憶體壓力）；設正值可啟用定時重整並依頻道錯開。此功能會保留，因 Twitch 可能在重整後提供可領取的忠誠點數按鈕；手動 `/refresh_now` 仍可用。
+  Defaults to `0` (scheduled refresh off to reduce Firefox memory pressure). Positive values enable staggered scheduled refresh. This remains supported because Twitch may expose a claimable loyalty-points button after reload; manual `/refresh_now` also remains available.
+- Session 啟動在短重試後仍發生 `page.goto` 導覽逾時時，5 分鐘內同一頻道 2 次或全部頻道合計 3 次會回收共用 Firefox；10 分鐘內 3 次此類 browser failure recovery 會要求 Docker 重啟容器。定時／手動頁面重整逾時不納入此計數。
+  If session startup still ends in a `page.goto` timeout after its short retry, two failures for one channel or three across all channels within five minutes recycle the shared Firefox. Three such browser-failure recoveries within ten minutes request a Docker container restart. Scheduled/manual reload timeouts are not counted.
 - `browser.resource_telemetry_interval_seconds`：預設 60 秒輸出 `runtime_resource_snapshot`（含 cgroup 欄位）。
   Defaults to 60 seconds for `runtime_resource_snapshot` (includes cgroup fields).
 - `browser.resource_guard`：容器級記憶體防護（見下方）。
@@ -224,7 +226,7 @@ To diagnose stuck scheduler ticks, page crashes, or browser cleanup issues, temp
 
 ```bash
 docker compose logs --no-log-prefix twitch-watchdog \
-  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed'
+  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close|navigation_failure)|page_crashed|page_closed|page_refresh_failed'
 ```
 
 常用操作：

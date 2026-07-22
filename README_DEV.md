@@ -128,6 +128,17 @@ Session startup events:
   Session startup ultimately failed; that channel is not kept in the active registry, and other channels continue processing.
 - `session_start_timeout`：逾時後會呼叫 session 的取消啟動路徑，立即要求 BrowserManager 關閉已建立的 page，再執行一般失敗清理。
   After a startup timeout, the manager invokes the session cancellation path, immediately asks BrowserManager to close any created page, and then performs normal failed-start cleanup.
+- `browser_navigation_failure_recorded`：debug 級事件；記錄短重試後的最終 `page.goto` 逾時與目前頻道／全域計數。成功啟動會清除該頻道先前的逾時計數。
+  Debug-level event recording a final `page.goto` timeout after the short retry and its current channel/global counts. A successful startup clears prior timeout counts for that channel.
+- `browser_navigation_failure_recycle_requested`：5 分鐘內同一頻道達 2 次，或全部頻道合計達 3 次最終導覽逾時，因此回收共用 browser。事件 observer 在 SessionManager reconcile lock 之外執行，避免 browser invalidation 與 session lock 形成循環等待。
+  The shared browser is recycled after two final navigation timeouts for one channel or three across all channels within five minutes. The event observer runs outside the SessionManager reconcile lock to avoid a browser-invalidation/session-lock cycle.
+- `browser_navigation_failure_recycle_failed`：導覽逾時要求的 browser recycle 失敗，直接升級至 fatal container recovery。
+  A navigation-timeout-triggered browser recycle failed and escalated directly to fatal container recovery.
+- `browser_navigation_failure_loop`：10 分鐘內累積 3 次 browser failure recovery，不再反覆回收 Firefox，改由 `ContainerRestartController` 要求 Docker 重啟容器。
+  Three browser-failure recoveries accumulated within ten minutes, so Firefox is no longer recycled again and `ContainerRestartController` requests a Docker container restart.
+
+只有 session 啟動的最終 `page.goto` 逾時納入上述 breaker。`page_refresh_interval_seconds` 定時重整與 `/refresh_now` 手動重整仍完整保留，且其 `page.reload` 逾時不會污染啟動失敗計數。
+Only final session-start `page.goto` timeouts enter this breaker. Scheduled `page_refresh_interval_seconds` reloads and manual `/refresh_now` remain fully supported, and their `page.reload` timeouts do not affect startup-failure counters.
 
 容器資源：
 
@@ -160,7 +171,7 @@ Useful diagnostic queries:
 
 ```bash
 docker compose logs --no-log-prefix twitch-watchdog \
-  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close)|page_crashed|page_closed|page_refresh_failed|resource_guard_|cgroup_|runtime_resource_snapshot|container_restart_requested'
+  | rg 'scheduler_tick_|scheduler_stall_detected|session_(reconcile|invalidate|start_attempt)|browser_(page_invalidation|resource_close|navigation_failure)|page_crashed|page_closed|page_refresh_failed|resource_guard_|cgroup_|runtime_resource_snapshot|container_restart_requested'
 ```
 
 重點事件：
@@ -225,6 +236,8 @@ When sharing logs for debugging, include `scheduler_tick_*`, `session_*`, `brows
 - Browser close timeout is **not** success. Page close hang schedules a full browser recycle asynchronously (no same-context page replace; avoids SessionManager/BrowserManager lock cycles).
 - Replacement Firefox launches only after `isConnected() === false` on the old browser; otherwise container restart.
 - Automatic restart exhaustion and crash-loop windows escalate to container restart.
+- Final session-start navigation timeouts use a five-minute breaker: 2 for one channel or 3 globally recycle Firefox. Three browser-failure recoveries within ten minutes escalate to container restart.
+- Scheduled/manual reload remains enabled when configured and is deliberately excluded from the session-start navigation breaker.
 
 ## 維護原則
 
