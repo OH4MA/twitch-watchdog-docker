@@ -27,4 +27,5 @@ browser:
   block_images: false
   block_fonts: false
   block_known_tracking: true
+  disable_chat: false
   resource_telemetry_interval_seconds: 240

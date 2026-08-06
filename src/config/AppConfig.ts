@@ -65,6 +65,7 @@ export interface BrowserConfig {
   readonly blockImages: boolean;
   readonly blockFonts: boolean;
   readonly blockKnownTracking: boolean;
+  readonly disableChat: boolean;
   readonly resourceTelemetryIntervalSeconds: number;
   readonly resourceGuard: ResourceGuardConfig;
 }

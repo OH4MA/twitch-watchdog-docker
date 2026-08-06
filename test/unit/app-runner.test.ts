@@ -59,6 +59,7 @@ const CONFIG: AppConfig = Object.freeze({
     blockImages: false,
     blockFonts: false,
     blockKnownTracking: false,
+    disableChat: true,
     resourceTelemetryIntervalSeconds: 300,
     resourceGuard: Object.freeze({
       enabled: false,

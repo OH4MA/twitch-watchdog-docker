@@ -98,6 +98,7 @@ export function createTestConfig(
       blockImages: false,
       blockFonts: false,
       blockKnownTracking: false,
+      disableChat: true,
       resourceTelemetryIntervalSeconds: 300,
       resourceGuard: createDefaultResourceGuard(maxConcurrentStreams),
       ...overrides.browser,

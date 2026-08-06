@@ -57,6 +57,7 @@ describe('YamlConfigLoader', () => {
         blockImages: false,
         blockFonts: false,
         blockKnownTracking: true,
+        disableChat: false,
         resourceTelemetryIntervalSeconds: 240,
         resourceGuard: {
           enabled: true,
@@ -227,6 +228,7 @@ twitch_api:
         blockImages: false,
         blockFonts: false,
         blockKnownTracking: false,
+        disableChat: true,
         resourceTelemetryIntervalSeconds: 60,
         resourceGuard: {
           enabled: true,
@@ -561,6 +563,7 @@ twitch_api:
     ['block_images', 'block_images: "true"'],
     ['block_fonts', 'block_fonts: "true"'],
     ['block_known_tracking', 'block_known_tracking: "true"'],
+    ['disable_chat', 'disable_chat: "true"'],
     [
       'resource_telemetry_interval_seconds',
       'resource_telemetry_interval_seconds: 0',

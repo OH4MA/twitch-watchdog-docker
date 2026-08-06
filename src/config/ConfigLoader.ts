@@ -519,6 +519,11 @@ function buildBrowserConfig(
       'browser.block_known_tracking',
       false,
     ),
+    disableChat: optionalBoolean(
+      browser.disable_chat,
+      'browser.disable_chat',
+      true,
+    ),
     resourceTelemetryIntervalSeconds: optionalPositiveInteger(
       browser.resource_telemetry_interval_seconds,
       'browser.resource_telemetry_interval_seconds',

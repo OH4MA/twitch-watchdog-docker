@@ -492,6 +492,7 @@ export class DefaultBrowserManager implements BrowserManager {
         blockFonts: this.config.browser.blockFonts,
         blockKnownTracking: this.config.browser.blockKnownTracking,
       });
+      await context.configureChatBlocking(this.config.browser.disableChat);
 
       this.browser = browser;
       this.context = context;

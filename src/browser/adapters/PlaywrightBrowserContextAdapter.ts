@@ -1,6 +1,7 @@
 import type { BrowserContext, Request } from 'playwright';
 
 import { PlaywrightBrowserPageAdapter } from './PlaywrightBrowserPageAdapter.js';
+import { buildChatBlockInitScript } from '../ChatDisabler.js';
 import type {
   BrowserContextAdapter,
   BrowserPageAdapter,
@@ -32,6 +33,13 @@ export class PlaywrightBrowserContextAdapter implements BrowserContextAdapter {
       }
       await route.continue();
     });
+  }
+
+  public async configureChatBlocking(enabled: boolean): Promise<void> {
+    if (!enabled) {
+      return;
+    }
+    await this.context.addInitScript(buildChatBlockInitScript());
   }
 
   public async newPage(): Promise<BrowserPageAdapter> {

@@ -20,6 +20,7 @@ function createConfig(
   overrides: Partial<{
     headless: boolean;
     restartOnCrash: boolean;
+    disableChat: boolean;
   }> = {},
 ): BrowserManagerConfig {
   return {
@@ -32,6 +33,7 @@ function createConfig(
       blockImages: false,
       blockFonts: false,
       blockKnownTracking: false,
+      disableChat: overrides.disableChat ?? true,
     },
   };
 }
@@ -126,6 +128,9 @@ class MockPageAdapter implements BrowserPageAdapter {
 
 class MockContextAdapter implements BrowserContextAdapter {
   public readonly configureResourceBlocking = vi.fn(
+    async (): Promise<void> => undefined,
+  );
+  public readonly configureChatBlocking = vi.fn(
     async (): Promise<void> => undefined,
   );
   public readonly newPage = vi.fn(async (): Promise<BrowserPageAdapter> => {
@@ -272,6 +277,21 @@ describe('DefaultBrowserManager', () => {
       blockFonts: false,
       blockKnownTracking: false,
     });
+    expect(context.configureChatBlocking).toHaveBeenCalledWith(true);
+  });
+
+  it('disableChat 設定為 false 時停用聊天封鎖', async () => {
+    const context = new MockContextAdapter();
+    const browser = new MockBrowserAdapter(context);
+    const launcher = new MockLauncher([browser]);
+    const manager = new DefaultBrowserManager(
+      createConfig({ disableChat: false }),
+      { launcher },
+    );
+
+    await manager.start();
+
+    expect(context.configureChatBlocking).toHaveBeenCalledWith(false);
   });
 
   it('context 建立失敗時關閉 browser，之後可重新 start', async () => {

@@ -15,6 +15,7 @@ export type BrowserManagerConfig = Pick<
     | 'blockImages'
     | 'blockFonts'
     | 'blockKnownTracking'
+    | 'disableChat'
   >;
 };
 
@@ -41,6 +42,7 @@ export interface BrowserPageAdapter {
 
 export interface BrowserContextAdapter {
   configureResourceBlocking(options: ResourceBlockingOptions): Promise<void>;
+  configureChatBlocking(enabled: boolean): Promise<void>;
   newPage(): Promise<BrowserPageAdapter>;
   close(): Promise<void>;
 }

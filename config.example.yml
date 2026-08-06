@@ -29,6 +29,8 @@ browser:
   block_images: false
   block_fonts: false
   block_known_tracking: false
+  # Block the Twitch chat WebSocket to cut DOM/CPU load on busy channels.
+  disable_chat: true
   resource_telemetry_interval_seconds: 60
   # Memory thresholds are binary MiB anchors for baseline_streams (default 3).
   # When scale_with_streams is true, effective = base + (anchor - base) * (N / baseline).

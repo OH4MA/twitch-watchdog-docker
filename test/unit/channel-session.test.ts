@@ -69,6 +69,7 @@ function createConfig(
       blockImages: overrides.blockImages ?? true,
       blockFonts: overrides.blockFonts ?? true,
       blockKnownTracking: overrides.blockKnownTracking ?? false,
+      disableChat: overrides.disableChat ?? true,
       resourceTelemetryIntervalSeconds:
         overrides.resourceTelemetryIntervalSeconds ?? 300,
       resourceGuard:
