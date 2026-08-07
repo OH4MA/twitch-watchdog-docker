@@ -448,4 +448,48 @@ describe('RewardClaimer', () => {
 
     expect(result.status).toBe('claimed');
   });
+
+  it('hasClaimableBonus 在主要按鈕可見時回傳 true', async () => {
+    const claimer = new RewardClaimer();
+
+    await expect(
+      claimer.hasClaimableBonus(
+        createPage({ primary: [{ visible: true }] }),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it('hasClaimableBonus 在沒有可見按鈕時回傳 false', async () => {
+    const claimer = new RewardClaimer();
+
+    await expect(
+      claimer.hasClaimableBonus(
+        createPage({
+          primary: [{ visible: false }],
+        }),
+      ),
+    ).resolves.toBe(false);
+  });
+
+  it('hasClaimableBonus 在 fallback 剛好一個可點按鈕時回傳 true', async () => {
+    const claimer = new RewardClaimer();
+
+    await expect(
+      claimer.hasClaimableBonus(
+        createPage({
+          fallback: [{ visible: true }],
+        }),
+      ),
+    ).resolves.toBe(true);
+  });
+
+  it('hasClaimableBonus 在 DOM 檢查拋錯時回傳 false', async () => {
+    const claimer = new RewardClaimer();
+    const page = createPage({ primary: [{ visible: true }] });
+    vi.spyOn(page, 'locator').mockImplementation(() => {
+      throw new Error('page crashed');
+    });
+
+    await expect(claimer.hasClaimableBonus(page)).resolves.toBe(false);
+  });
 });

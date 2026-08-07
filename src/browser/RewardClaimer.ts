@@ -51,6 +51,7 @@ export type RewardClaimObserver = (
 
 export interface RewardClaimer {
   claimIfAvailable(page: Page, channel: string): Promise<RewardClaimResult>;
+  hasClaimableBonus(page: Page): Promise<boolean>;
 }
 
 const NOOP_LOGGER: RewardClaimerLogger = {
@@ -70,6 +71,14 @@ export const RewardClaimer = class RewardClaimerImplementation
     this.logger = options.logger ?? NOOP_LOGGER;
     this.now = resolveClock(options.clock);
     this.onResult = options.onResult;
+  }
+
+  public async hasClaimableBonus(page: Page): Promise<boolean> {
+    try {
+      return (await findClaimButton(page)) !== null;
+    } catch {
+      return false;
+    }
   }
 
   public async claimIfAvailable(

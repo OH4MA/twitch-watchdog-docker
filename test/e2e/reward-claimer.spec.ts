@@ -171,4 +171,20 @@ test.describe('RewardClaimer mock pages', () => {
     ).toBe('claimed');
     await expect(button).toHaveAttribute('data-click-count', '2');
   });
+
+  test('hasClaimableBonus 在領取按鈕存在時回傳 true', async ({ page }) => {
+    await page.goto(mockPageUrl('reward-available.html'));
+
+    await expect(
+      new RewardClaimer().hasClaimableBonus(page),
+    ).resolves.toBe(true);
+  });
+
+  test('hasClaimableBonus 在沒有領取按鈕時回傳 false', async ({ page }) => {
+    await page.goto(mockPageUrl('reward-unavailable.html'));
+
+    await expect(
+      new RewardClaimer().hasClaimableBonus(page),
+    ).resolves.toBe(false);
+  });
 });

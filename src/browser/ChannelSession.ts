@@ -54,6 +54,8 @@ const MAX_TIMER_JITTER_MS = 5_000;
 const MAX_PAGE_REFRESH_JITTER_MS = 60_000;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const DEFAULT_PAGE_OPERATION_DRAIN_TIMEOUT_MS = 5_000;
+const DEFAULT_POINTS_CLAIM_RETRY_ATTEMPTS = 3;
+const DEFAULT_POINTS_CLAIM_RETRY_DELAY_MS = 1_000;
 export const REWARD_FAILURE_RECOVERY_THRESHOLD = 10;
 
 export type ChannelSessionState =
@@ -142,6 +144,8 @@ export interface DefaultChannelSessionOptions {
   readonly onPageRefresh?: ChannelSessionRefreshObserver;
   readonly onContainerRestartRequested?: ContainerRestartRequestObserver;
   readonly pageOperationDrainTimeoutMs?: number;
+  readonly pointsClaimRetryAttempts?: number;
+  readonly pointsClaimRetryDelayMs?: number;
   readonly now?: () => Date;
 }
 
@@ -157,6 +161,8 @@ export interface DefaultChannelSessionFactoryOptions {
   readonly onPageRefresh?: ChannelSessionRefreshObserver;
   readonly onContainerRestartRequested?: ContainerRestartRequestObserver;
   readonly pageOperationDrainTimeoutMs?: number;
+  readonly pointsClaimRetryAttempts?: number;
+  readonly pointsClaimRetryDelayMs?: number;
   readonly now?: () => Date;
 }
 
@@ -200,6 +206,8 @@ export class DefaultChannelSession implements ChannelSession {
     | ContainerRestartRequestObserver
     | undefined;
   private readonly pageOperationDrainTimeoutMs: number;
+  private readonly pointsClaimRetryAttempts: number;
+  private readonly pointsClaimRetryDelayMs: number;
   private readonly now: () => Date;
 
   private currentState: ChannelSessionState = 'stopped';
@@ -249,6 +257,14 @@ export class DefaultChannelSession implements ChannelSession {
     this.pageOperationDrainTimeoutMs = positiveInteger(
       options.pageOperationDrainTimeoutMs,
       DEFAULT_PAGE_OPERATION_DRAIN_TIMEOUT_MS,
+    );
+    this.pointsClaimRetryAttempts = positiveInteger(
+      options.pointsClaimRetryAttempts,
+      DEFAULT_POINTS_CLAIM_RETRY_ATTEMPTS,
+    );
+    this.pointsClaimRetryDelayMs = positiveInteger(
+      options.pointsClaimRetryDelayMs,
+      DEFAULT_POINTS_CLAIM_RETRY_DELAY_MS,
     );
     this.now = options.now ?? (() => new Date());
   }
@@ -460,7 +476,7 @@ export class DefaultChannelSession implements ChannelSession {
           reason: 'page_unavailable' as const,
         };
       }
-      return readChannelPointsBalance(page);
+      return this.readChannelPointsWithClaimRecovery(page);
     });
     this.pointsFlight = flight;
     flight.then(
@@ -476,6 +492,56 @@ export class DefaultChannelSession implements ChannelSession {
       },
     );
     return flight;
+  }
+
+  private async readChannelPointsWithClaimRecovery(
+    page: Page,
+  ): Promise<ChannelSessionPointsResult> {
+    const initial = await readChannelPointsBalance(page);
+    if (initial.status === 'available') {
+      return initial;
+    }
+
+    let claimable = false;
+    try {
+      claimable = await this.rewardClaimer.hasClaimableBonus(page);
+    } catch (error: unknown) {
+      safeLog(this.logger, 'debug', 'points_claimable_check_failed', {
+        channel: this.channel,
+        error: safeErrorMessage(error),
+      });
+    }
+    if (!claimable) {
+      return initial;
+    }
+
+    safeLog(this.logger, 'info', 'points_claim_before_read', {
+      channel: this.channel,
+      readFailure: initial.reason,
+    });
+
+    try {
+      await this.rewardClaimer.claimIfAvailable(page, this.channel);
+    } catch (error: unknown) {
+      safeLog(this.logger, 'warn', 'points_claim_before_read_failed', {
+        channel: this.channel,
+        error: safeErrorMessage(error),
+      });
+    }
+
+    let lastResult: ChannelSessionPointsResult = initial;
+    for (
+      let attempt = 1;
+      attempt <= this.pointsClaimRetryAttempts;
+      attempt += 1
+    ) {
+      await sleep(this.pointsClaimRetryDelayMs);
+      lastResult = await readChannelPointsBalance(page);
+      if (lastResult.status === 'available') {
+        return lastResult;
+      }
+    }
+    return lastResult;
   }
 
   public getRefreshStatus(): ChannelSessionRefreshStatus {
@@ -1237,4 +1303,8 @@ function positiveInteger(
     value > 0
     ? value
     : fallback;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

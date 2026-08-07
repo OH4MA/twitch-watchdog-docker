@@ -40,6 +40,7 @@ interface MockPageControls {
   setSideNavExpanded(expanded: boolean): void;
   setUrl(url: string): void;
   setClosed(closed: boolean): void;
+  setChannelPointsBalance(balance: string | undefined): void;
 }
 
 const CHANNEL = 'streamer_one';
@@ -121,6 +122,7 @@ function createMockPage(input: {
   let marker = input.marker;
   let currentUrl = input.url ?? 'about:blank';
   let closed = false;
+  let channelPointsBalance = input.channelPointsBalance;
   let contentWarningClickCount = 0;
   let sideNavPresent = input.sideNavExpanded !== undefined;
   let sideNavExpanded = input.sideNavExpanded ?? false;
@@ -168,11 +170,11 @@ function createMockPage(input: {
       }[]> {
         if (
           selector === COMMUNITY_POINTS_BALANCE_SELECTOR &&
-          input.channelPointsBalance !== undefined
+          channelPointsBalance !== undefined
         ) {
           return [{
             visible: true,
-            candidates: [input.channelPointsBalance],
+            candidates: [channelPointsBalance],
           }];
         }
         return [];
@@ -242,6 +244,9 @@ function createMockPage(input: {
     setClosed(value): void {
       closed = value;
     },
+    setChannelPointsBalance(value): void {
+      channelPointsBalance = value;
+    },
   };
 }
 
@@ -278,11 +283,14 @@ function createRewardClaimer(
 ): {
   readonly claimer: RewardClaimer;
   readonly claimIfAvailable: ReturnType<typeof vi.fn>;
+  readonly hasClaimableBonus: ReturnType<typeof vi.fn>;
 } {
   const claimIfAvailable = vi.fn(implementation);
+  const hasClaimableBonus = vi.fn(async () => false);
   return {
-    claimer: { claimIfAvailable },
+    claimer: { claimIfAvailable, hasClaimableBonus },
     claimIfAvailable,
+    hasClaimableBonus,
   };
 }
 
@@ -646,6 +654,141 @@ describe('DefaultChannelSession', () => {
       status: 'unavailable',
       reason: 'page_unavailable',
     });
+  });
+
+  it('讀取失敗且無可領取 bonus 時回傳原結果且不領取', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer();
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+    });
+    await session.start();
+
+    await expect(session.getChannelPoints()).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'not_found',
+    });
+    expect(rewards.hasClaimableBonus).toHaveBeenCalledOnce();
+    expect(rewards.claimIfAvailable).not.toHaveBeenCalled();
+
+    await session.stop('test_complete');
+  });
+
+  it('hasClaimableBonus 檢查拋錯時視為不可領取', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer();
+    rewards.hasClaimableBonus.mockRejectedValueOnce(new Error('boom'));
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+    });
+    await session.start();
+
+    await expect(session.getChannelPoints()).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'not_found',
+    });
+    expect(rewards.claimIfAvailable).not.toHaveBeenCalled();
+
+    await session.stop('test_complete');
+  });
+
+  it('被 bonus 蓋住時先領取再重讀回傳餘額', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer(async (_page, channel) => {
+      mockPage.setChannelPointsBalance('3,500');
+      return {
+        status: 'claimed',
+        channel,
+        claimedAt: NOW.toISOString(),
+      };
+    });
+    rewards.hasClaimableBonus.mockResolvedValue(true);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      pointsClaimRetryAttempts: 1,
+      pointsClaimRetryDelayMs: 1,
+    });
+    await session.start();
+
+    await expect(session.getChannelPoints()).resolves.toEqual({
+      status: 'available',
+      balance: 3_500,
+      displayValue: '3,500',
+    });
+    expect(rewards.hasClaimableBonus).toHaveBeenCalledOnce();
+    expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
+    expect(rewards.claimIfAvailable).toHaveBeenCalledWith(
+      mockPage.page,
+      CHANNEL,
+    );
+
+    await session.stop('test_complete');
+  });
+
+  it('領取後重讀仍失敗時回傳最後一次 unavailable', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer(async (_page, channel) => ({
+      status: 'claimed',
+      channel,
+      claimedAt: NOW.toISOString(),
+    }));
+    rewards.hasClaimableBonus.mockResolvedValue(true);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      pointsClaimRetryAttempts: 2,
+      pointsClaimRetryDelayMs: 1,
+    });
+    await session.start();
+
+    await expect(session.getChannelPoints()).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'not_found',
+    });
+    expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
+
+    await session.stop('test_complete');
+  });
+
+  it('claim 拋錯時仍嘗試重讀餘額', async () => {
+    const mockPage = createMockPage({ marker: 'liveContent' });
+    const browser = createBrowserManager(mockPage.page);
+    const rewards = createRewardClaimer(async () => {
+      throw new Error('claim exploded');
+    });
+    rewards.hasClaimableBonus.mockResolvedValue(true);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: rewards.claimer,
+      pointsClaimRetryAttempts: 1,
+      pointsClaimRetryDelayMs: 1,
+    });
+    await session.start();
+
+    await expect(session.getChannelPoints()).resolves.toEqual({
+      status: 'unavailable',
+      reason: 'not_found',
+    });
+    expect(rewards.claimIfAvailable).toHaveBeenCalledOnce();
+
+    await session.stop('test_complete');
   });
 
   it.each([
