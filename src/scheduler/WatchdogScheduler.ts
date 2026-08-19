@@ -12,7 +12,10 @@ import {
   type ChannelLiveStatus,
   type LiveStatusProvider,
 } from '../twitch/index.js';
-import type { SessionManager } from '../sessions/index.js';
+import type {
+  ReconcileCoordinator,
+  SessionManager,
+} from '../sessions/index.js';
 import type { StreamSelector } from './StreamSelector.js';
 
 export interface WatchdogScheduler {
@@ -59,7 +62,8 @@ export interface DefaultWatchdogSchedulerOptions {
   readonly config: WatchdogSchedulerConfig;
   readonly liveStatusProvider: LiveStatusProvider;
   readonly streamSelector: StreamSelector;
-  readonly sessionManager: SessionManager;
+  readonly sessionManager?: Pick<SessionManager, 'reconcile'>;
+  readonly reconcileCoordinator?: Pick<ReconcileCoordinator, 'request'>;
   readonly logger: Logger;
   readonly timer?: SchedulerTimer;
   readonly now?: () => Date;
@@ -222,7 +226,7 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
         liveStatuses: knownStatuses,
         maxConcurrentStreams: this.runtimeConfig.maxConcurrentStreams,
       });
-    await this.options.sessionManager.reconcile(activeChannels);
+    this.submitReconcile(activeChannels);
     await this.runOnce();
   }
 
@@ -271,7 +275,21 @@ export class DefaultWatchdogScheduler implements WatchdogScheduler {
       activeChannels,
     });
 
-    await this.options.sessionManager.reconcile(activeChannels);
+    this.submitReconcile(activeChannels);
+  }
+
+  private submitReconcile(activeChannels: readonly string[]): void {
+    if (this.options.reconcileCoordinator !== undefined) {
+      this.options.reconcileCoordinator.request(activeChannels);
+      return;
+    }
+
+    const reconcile = this.options.sessionManager?.reconcile(activeChannels);
+    void reconcile?.catch((error: unknown) => {
+      this.options.logger.error('reconcile_submit_failed', {
+        error: safeErrorMessage(error),
+      });
+    });
   }
 
   private isRateLimited(): boolean {

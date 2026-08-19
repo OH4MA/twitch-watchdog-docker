@@ -1,6 +1,7 @@
 import {
   DefaultBrowserManager,
   DefaultChannelSessionFactory,
+  PlaywrightBrowserLauncher,
   RewardClaimer,
 } from '../browser/index.js';
 import {
@@ -30,7 +31,11 @@ import {
   DefaultWatchdogScheduler,
   selectActiveChannels,
 } from '../scheduler/index.js';
-import { DefaultSessionManager } from '../sessions/index.js';
+import {
+  ChannelRecoveryPolicy,
+  DefaultReconcileCoordinator,
+  DefaultSessionManager,
+} from '../sessions/index.js';
 import {
   DefaultTelegramBot,
   TelegramApiClient,
@@ -49,6 +54,9 @@ import {
   ContainerRestartController,
   type ContainerRestartRequest,
 } from './ContainerRestartController.js';
+import {
+  createRuntimeStartupDiagnostics,
+} from './RuntimeDiagnostics.js';
 import { RuntimeResourceMonitor } from './RuntimeResourceMonitor.js';
 import { SchedulerStallWatchdog } from './SchedulerStallWatchdog.js';
 
@@ -129,6 +137,7 @@ export function createDefaultRuntime(
   } = {};
 
   const browserManager = new DefaultBrowserManager(config, {
+    launcher: new PlaywrightBrowserLauncher(config.browser.engine),
     logger,
     onInvalidated: (invalidation) => {
       if (invalidation.reason === 'page_crashed') {
@@ -189,8 +198,17 @@ export function createDefaultRuntime(
     ),
     onNavigationOutcomes: (outcomes) =>
       browserManager.reportNavigationOutcomes(outcomes),
+    recoveryPolicy: new ChannelRecoveryPolicy({
+      recovery: config.browser.recovery,
+      sessionStart: config.browser.sessionStart,
+    }),
+    configuredChannels: config.channels,
   });
   sessionManagerReference.current = sessionManager;
+  const reconcileCoordinator = new DefaultReconcileCoordinator({
+    sessionManager,
+    logger,
+  });
 
   const liveStatusProvider = new TwitchApiClient({
     clientId: config.twitchApi.clientId,
@@ -203,7 +221,7 @@ export function createDefaultRuntime(
     config,
     liveStatusProvider,
     streamSelector: { selectActiveChannels },
-    sessionManager,
+    reconcileCoordinator,
     logger,
     onStreamStatusChanged: (change) =>
       notify((bot) => bot.notifyStreamStatus(change)),
@@ -214,6 +232,7 @@ export function createDefaultRuntime(
     target: {
       async updateConfig(nextConfig) {
         runtimeWatchConfig = nextConfig;
+        sessionManager.updateConfiguredChannels(nextConfig.channels);
         await scheduler.updateConfig(nextConfig);
       },
     },
@@ -287,8 +306,17 @@ export function createDefaultRuntime(
   return {
     browserManager,
     sessionManager,
+    reconcileCoordinator,
     scheduler,
     integrations,
+    startupDiagnostics: () =>
+      createRuntimeStartupDiagnostics({
+        config,
+        browserManager,
+        resourceLimits: runtimeResourceMonitor,
+        env: process.env,
+        browserEngine: config.browser.engine,
+      }),
   };
 }
 

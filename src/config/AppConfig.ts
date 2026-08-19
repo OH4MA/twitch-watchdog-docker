@@ -3,6 +3,8 @@ export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 export const STREAM_QUALITIES = ['auto', '160p', '360p', '480p'] as const;
 export type StreamQuality = (typeof STREAM_QUALITIES)[number];
+export const BROWSER_ENGINES = ['firefox', 'chromium'] as const;
+export type BrowserEngine = (typeof BROWSER_ENGINES)[number];
 
 export interface TwitchApiConfig {
   readonly clientId: string;
@@ -51,7 +53,25 @@ export interface ResourceGuardEffectiveThresholds {
   readonly postRecycleTargetMemoryMib: number;
 }
 
+export interface BrowserRecoveryConfig {
+  readonly pageCrashBackoffSeconds: readonly number[];
+  readonly channelCrashWindowSeconds: number;
+  readonly channelQuarantineThreshold: number;
+  readonly channelQuarantineSeconds: number;
+  readonly stableResetSeconds: number;
+  readonly multiChannelCrashWindowSeconds: number;
+  readonly multiChannelCrashThreshold: number;
+  readonly browserFailureWindowSeconds: number;
+  readonly browserFailureContainerThreshold: number;
+}
+
+export interface BrowserSessionStartConfig {
+  readonly failureBackoffSeconds: readonly number[];
+  readonly maximumCooldownSeconds: number;
+}
+
 export interface BrowserConfig {
+  readonly engine: BrowserEngine;
   readonly navigationTimeoutMs: number;
   readonly pageHealthCheckIntervalSeconds: number;
   readonly rewardCheckIntervalSeconds: number;
@@ -67,6 +87,8 @@ export interface BrowserConfig {
   readonly blockKnownTracking: boolean;
   readonly disableChat: boolean;
   readonly resourceTelemetryIntervalSeconds: number;
+  readonly recovery: BrowserRecoveryConfig;
+  readonly sessionStart: BrowserSessionStartConfig;
   readonly resourceGuard: ResourceGuardConfig;
 }
 

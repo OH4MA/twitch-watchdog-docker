@@ -44,6 +44,7 @@ describe('YamlConfigLoader', () => {
         clientSecret: '',
       },
       browser: {
+        engine: 'chromium',
         navigationTimeoutMs: 45_000,
         pageHealthCheckIntervalSeconds: 40,
         rewardCheckIntervalSeconds: 20,
@@ -59,6 +60,21 @@ describe('YamlConfigLoader', () => {
         blockKnownTracking: true,
         disableChat: false,
         resourceTelemetryIntervalSeconds: 240,
+        recovery: {
+          pageCrashBackoffSeconds: [30, 60, 120],
+          channelCrashWindowSeconds: 600,
+          channelQuarantineThreshold: 4,
+          channelQuarantineSeconds: 900,
+          stableResetSeconds: 1_800,
+          multiChannelCrashWindowSeconds: 15,
+          multiChannelCrashThreshold: 2,
+          browserFailureWindowSeconds: 600,
+          browserFailureContainerThreshold: 3,
+        },
+        sessionStart: {
+          failureBackoffSeconds: [30, 60, 120],
+          maximumCooldownSeconds: 900,
+        },
         resourceGuard: {
           enabled: true,
           sampleIntervalSeconds: 2,
@@ -117,13 +133,102 @@ describe('YamlConfigLoader', () => {
       'your_twitch_client_secret',
     );
     expect(config.browser.pageRefreshIntervalSeconds).toBe(0);
+    expect(config.browser.engine).toBe('firefox');
     expect(config.browser.resourceTelemetryIntervalSeconds).toBe(60);
+    expect(config.browser.recovery.pageCrashBackoffSeconds).toEqual([
+      30,
+      60,
+      120,
+    ]);
+    expect(config.browser.sessionStart.maximumCooldownSeconds).toBe(900);
     expect(config.browser.resourceGuard.enabled).toBe(true);
     expect(config.browser.resourceGuard.effective.maxConcurrentStreams).toBe(
       2,
     );
     expect(config.telegram.enabled).toBe(false);
     expect(config.discord.enabled).toBe(false);
+  });
+
+  it('載入自訂的頻道復原與 session 啟動冷卻設定', async () => {
+    const config = await loadSource(`channels: [streamer]
+twitch_api:
+  client_id: fixture-client-id
+  access_token: fixture-access-token
+browser:
+  recovery:
+    page_crash_backoff_seconds: [10, 20, 40]
+    channel_crash_window_seconds: 300
+    channel_quarantine_threshold: 5
+    channel_quarantine_seconds: 1200
+    stable_reset_seconds: 2400
+    multi_channel_crash_window_seconds: 20
+    multi_channel_crash_threshold: 3
+    browser_failure_window_seconds: 900
+    browser_failure_container_threshold: 4
+  session_start:
+    failure_backoff_seconds: [15, 45]
+    maximum_cooldown_seconds: 600
+`);
+
+    expect(config.browser.recovery).toEqual({
+      pageCrashBackoffSeconds: [10, 20, 40],
+      channelCrashWindowSeconds: 300,
+      channelQuarantineThreshold: 5,
+      channelQuarantineSeconds: 1_200,
+      stableResetSeconds: 2_400,
+      multiChannelCrashWindowSeconds: 20,
+      multiChannelCrashThreshold: 3,
+      browserFailureWindowSeconds: 900,
+      browserFailureContainerThreshold: 4,
+    });
+    expect(config.browser.sessionStart).toEqual({
+      failureBackoffSeconds: [15, 45],
+      maximumCooldownSeconds: 600,
+    });
+  });
+
+  it.each([
+    [
+      'recovery 不是物件',
+      'browser:\n  recovery: invalid',
+    ],
+    [
+      'page crash backoff 為空',
+      'browser:\n  recovery:\n    page_crash_backoff_seconds: []',
+    ],
+    [
+      'page crash backoff 含非正整數',
+      'browser:\n  recovery:\n    page_crash_backoff_seconds: [30, 0]',
+    ],
+    [
+      'quarantine 小於十分鐘',
+      'browser:\n  recovery:\n    channel_quarantine_seconds: 599',
+    ],
+    [
+      'quarantine 大於三十分鐘',
+      'browser:\n  recovery:\n    channel_quarantine_seconds: 1801',
+    ],
+    [
+      'session_start 不是物件',
+      'browser:\n  session_start: invalid',
+    ],
+    [
+      'session start backoff 為空',
+      'browser:\n  session_start:\n    failure_backoff_seconds: []',
+    ],
+    [
+      'session start cooldown 不是正整數',
+      'browser:\n  session_start:\n    maximum_cooldown_seconds: 0',
+    ],
+  ])('%s 時拒絕設定', async (_name, browserSource) => {
+    await expect(
+      loadSource(`${browserSource}
+channels: [streamer]
+twitch_api:
+  client_id: fixture-client-id
+  access_token: fixture-access-token
+`),
+    ).rejects.toBeInstanceOf(ConfigValidationError);
   });
 
   it('resource_guard 門檻依 max_concurrent_streams 縮放（N=3 錨點）', async () => {
@@ -215,6 +320,7 @@ twitch_api:
         clientSecret: '',
       },
       browser: {
+        engine: 'firefox',
         navigationTimeoutMs: 30_000,
         pageHealthCheckIntervalSeconds: 60,
         rewardCheckIntervalSeconds: 30,
@@ -230,6 +336,21 @@ twitch_api:
         blockKnownTracking: false,
         disableChat: true,
         resourceTelemetryIntervalSeconds: 60,
+        recovery: {
+          pageCrashBackoffSeconds: [30, 60, 120],
+          channelCrashWindowSeconds: 600,
+          channelQuarantineThreshold: 4,
+          channelQuarantineSeconds: 900,
+          stableResetSeconds: 1_800,
+          multiChannelCrashWindowSeconds: 15,
+          multiChannelCrashThreshold: 2,
+          browserFailureWindowSeconds: 600,
+          browserFailureContainerThreshold: 3,
+        },
+        sessionStart: {
+          failureBackoffSeconds: [30, 60, 120],
+          maximumCooldownSeconds: 900,
+        },
         resourceGuard: {
           enabled: true,
           sampleIntervalSeconds: 2,
@@ -532,6 +653,7 @@ twitch_api:
   });
 
   it.each([
+    ['engine', 'engine: webkit'],
     ['navigation_timeout_ms', 'navigation_timeout_ms: 0'],
     ['navigation_timeout_ms 型別', 'navigation_timeout_ms: "30000"'],
     [
@@ -686,6 +808,14 @@ twitch_api:
     expect(Object.isFrozen(config.channels)).toBe(true);
     expect(Object.isFrozen(config.twitchApi)).toBe(true);
     expect(Object.isFrozen(config.browser)).toBe(true);
+    expect(Object.isFrozen(config.browser.recovery)).toBe(true);
+    expect(
+      Object.isFrozen(config.browser.recovery.pageCrashBackoffSeconds),
+    ).toBe(true);
+    expect(Object.isFrozen(config.browser.sessionStart)).toBe(true);
+    expect(
+      Object.isFrozen(config.browser.sessionStart.failureBackoffSeconds),
+    ).toBe(true);
     expect(Object.isFrozen(config.telegram)).toBe(true);
     expect(Object.isFrozen(config.telegram.allowedChatIds)).toBe(true);
     expect(Object.isFrozen(config.discord)).toBe(true);

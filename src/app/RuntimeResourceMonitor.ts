@@ -3,6 +3,7 @@ import type { ResourceGuardConfig } from '../config/AppConfig.js';
 import type { Logger } from '../logging/index.js';
 import type { SessionManager } from '../sessions/index.js';
 import type { ApplicationIntegration } from './AppRunner.js';
+import type { RuntimeResourceLimitsSnapshot } from './RuntimeDiagnostics.js';
 import {
   CgroupV2Reader,
   type CgroupSnapshot,
@@ -50,6 +51,10 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
   private thresholdsClampedLogged = false;
   private recycleFlight: Promise<void> | undefined;
   private lastTelemetryAtMs = 0;
+  private latestResourceLimits: RuntimeResourceLimitsSnapshot = {
+    memoryMaxBytes: null,
+    pidsMax: null,
+  };
   private resourceGuardState:
     | 'disabled'
     | 'unavailable'
@@ -127,6 +132,10 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
     this.policy?.noteBrowserRestart();
   }
 
+  public getLatestResourceLimits(): RuntimeResourceLimitsSnapshot {
+    return { ...this.latestResourceLimits };
+  }
+
   private scheduleNextSample(): void {
     if (this.stopped) {
       return;
@@ -201,6 +210,11 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
     }
 
     if (shouldLogTelemetry) {
+      this.latestResourceLimits = {
+        memoryMaxBytes:
+          serializableByteCount(cgroup?.memoryMaxBytes) ?? null,
+        pidsMax: serializableByteCount(cgroup?.pidsMax) ?? null,
+      };
       this.recordSnapshot(cgroup);
       this.lastTelemetryAtMs = this.now();
     }
@@ -283,11 +297,11 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
           this.resourceGuardState === 'warning' ||
           this.resourceGuardState === 'observing'
         ) {
-          // Keep warning latch state in policy; monitor state returns to idle
-          // when memory is healthy and not observing.
-          if (!this.policy?.isRecycleObservationActive()) {
-            this.resourceGuardState = 'idle';
-          }
+          this.resourceGuardState = this.policy?.isRecycleObservationActive()
+            ? 'observing'
+            : this.policy?.isWarningLatched() === true
+              ? 'warning'
+              : 'idle';
         }
         return;
       case 'warn': {
@@ -425,9 +439,11 @@ export class RuntimeResourceMonitor implements ApplicationIntegration {
       cgroupMemoryCurrentBytes: serializableByteCount(
         cgroup?.memoryCurrentBytes,
       ),
+      cgroupMemoryMaxBytes: serializableByteCount(cgroup?.memoryMaxBytes),
       cgroupMemoryPeakBytes: serializableByteCount(cgroup?.memoryPeakBytes),
       cgroupSwapCurrentBytes: serializableByteCount(cgroup?.swapCurrentBytes),
       cgroupPidsCurrent: serializableByteCount(cgroup?.pidsCurrent),
+      cgroupPidsMax: serializableByteCount(cgroup?.pidsMax),
       cgroupCpuUsageUsec: serializableByteCount(cgroupCpu?.usageUsec),
       cgroupCpuUserUsec: serializableByteCount(cgroupCpu?.userUsec),
       cgroupCpuSystemUsec: serializableByteCount(cgroupCpu?.systemUsec),

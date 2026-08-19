@@ -10,6 +10,7 @@ import type {
   ChannelSessionRefreshStatus,
 } from '../browser/ChannelSession.js';
 import type { BrowserNavigationOutcome } from '../browser/BrowserManager.js';
+import type { ChannelRecoveryPolicy } from './ChannelRecoveryPolicy.js';
 
 export type {
   ChannelSession,
@@ -20,6 +21,8 @@ export type {
 
 export interface SessionManager {
   reconcile(activeChannels: readonly string[]): Promise<void>;
+  updateConfiguredChannels(channels: readonly string[]): void;
+  cancelPendingStarts(reason: string): Promise<void>;
   stopAll(reason: string): Promise<void>;
   invalidate(channel: string, reason: string): Promise<void>;
   getActiveChannels(): string[];
@@ -74,6 +77,8 @@ export interface SessionManagerDependencies {
   readonly startStaggerMs?: number;
   readonly sessionOperationTimeoutMs?: number;
   readonly onNavigationOutcomes?: SessionNavigationOutcomeObserver;
+  readonly recoveryPolicy?: ChannelRecoveryPolicy;
+  readonly configuredChannels?: readonly string[];
 }
 
 const NOOP_LOGGER: SessionManagerLogger = {
@@ -96,6 +101,10 @@ class SessionOperationTimeoutError extends Error {
   }
 }
 
+type RecoveryProbeGate =
+  | { readonly allowed: false }
+  | { readonly allowed: true; readonly recoveryGeneration?: number };
+
 export class DefaultSessionManager implements SessionManager {
   private readonly sessions = new Map<string, ChannelSession>();
   private readonly logger: SessionManagerLogger;
@@ -107,7 +116,13 @@ export class DefaultSessionManager implements SessionManager {
   private readonly onNavigationOutcomes:
     | SessionNavigationOutcomeObserver
     | undefined;
-  private operationTail: Promise<void> = Promise.resolve();
+  private readonly channelOperationTails = new Map<string, Promise<void>>();
+  private readonly startingSessions = new Map<string, ChannelSession>();
+  private readonly cancelledStartSessions = new WeakSet<ChannelSession>();
+  private shutdownRequested = false;
+  private readonly recoveryPolicy: ChannelRecoveryPolicy | undefined;
+  private configuredChannels: Set<string>;
+  private readonly stableRecoveryGenerations = new Map<string, number>();
 
   public constructor(
     private readonly factory: ChannelSessionFactory,
@@ -133,9 +148,17 @@ export class DefaultSessionManager implements SessionManager {
       DEFAULT_SESSION_OPERATION_TIMEOUT_MS,
     );
     this.onNavigationOutcomes = dependencies.onNavigationOutcomes;
+    this.recoveryPolicy = dependencies.recoveryPolicy;
+    this.configuredChannels = new Set(
+      (dependencies.configuredChannels ?? []).map(normalizeChannel),
+    );
   }
 
   public async reconcile(activeChannels: readonly string[]): Promise<void> {
+    if (this.shutdownRequested) {
+      return;
+    }
+    this.recordStableRecoveryResets();
     const desiredChannels = uniqueChannels(activeChannels);
     const navigationOutcomes: BrowserNavigationOutcome[] = [];
     const startedAtMs = Date.now();
@@ -144,63 +167,110 @@ export class DefaultSessionManager implements SessionManager {
       activeBefore: this.getActiveChannels(),
     });
 
-    await this.runExclusive(async () => {
-      const desiredChannelSet = new Set(desiredChannels);
-      let stoppedCount = 0;
-      let startedCount = 0;
+    const desiredChannelSet = new Set(desiredChannels);
+    const channelsToStop = [...this.sessions.keys()].filter(
+      (channel) => !desiredChannelSet.has(channel),
+    );
+    const stopResults = await Promise.all(
+      channelsToStop.map((channel) =>
+        this.runChannelExclusive(channel, async () => {
+          const session = this.sessions.get(channel);
+          if (session === undefined) {
+            return false;
+          }
+          this.sessions.delete(channel);
+          await this.stopSession(session, channel, 'inactive');
+          return true;
+        }),
+      ),
+    );
 
-      for (const [channel, session] of [...this.sessions]) {
-        if (desiredChannelSet.has(channel)) {
-          continue;
-        }
-
-        this.sessions.delete(channel);
-        await this.stopSession(session, channel, 'inactive');
-        stoppedCount += 1;
+    let startedCount = 0;
+    let hasAttemptedStart = false;
+    for (const channel of desiredChannels) {
+      if (this.shutdownRequested || this.sessions.has(channel)) {
+        continue;
       }
-
-      let hasAttemptedStart = false;
-      for (const channel of desiredChannels) {
-        if (this.sessions.has(channel)) {
-          continue;
-        }
-
-        if (hasAttemptedStart && this.startStaggerMs > 0) {
-          await this.sleep(this.startStaggerMs);
-        }
-
-        const navigationOutcome = await this.startSession(channel);
-        if (navigationOutcome !== undefined) {
-          navigationOutcomes.push(navigationOutcome);
-        }
-        if (this.sessions.has(channel)) {
-          startedCount += 1;
-        }
-        hasAttemptedStart = true;
+      if (hasAttemptedStart && this.startStaggerMs > 0) {
+        await this.sleep(this.startStaggerMs);
       }
+      const navigationOutcome = await this.runChannelExclusive(
+        channel,
+        async () => {
+          if (this.shutdownRequested || this.sessions.has(channel)) {
+            return undefined;
+          }
+          const gate = this.beginRecoveryProbe(channel);
+          if (!gate.allowed) {
+            return undefined;
+          }
+          return this.startSession(channel, gate.recoveryGeneration);
+        },
+      );
+      if (navigationOutcome !== undefined) {
+        navigationOutcomes.push(navigationOutcome);
+      }
+      if (this.sessions.has(channel)) {
+        startedCount += 1;
+      }
+      hasAttemptedStart = true;
+    }
 
-      this.reorderSessions(desiredChannels);
-      this.safeLog('debug', 'session_reconcile_completed', {
-        desiredChannels,
-        activeAfter: this.getActiveChannels(),
-        stoppedCount,
-        startedCount,
-        durationMs: Date.now() - startedAtMs,
-      });
+    this.reorderSessions(desiredChannels);
+    this.safeLog('debug', 'session_reconcile_completed', {
+      desiredChannels,
+      activeAfter: this.getActiveChannels(),
+      stoppedCount: stopResults.filter(Boolean).length,
+      startedCount,
+      durationMs: Date.now() - startedAtMs,
     });
 
     await this.notifyNavigationOutcomes(navigationOutcomes);
   }
 
-  public async stopAll(reason: string): Promise<void> {
-    await this.runExclusive(async () => {
-      const sessions = [...this.sessions];
-      this.sessions.clear();
-
-      for (const [channel, session] of sessions) {
-        await this.stopSession(session, channel, reason);
+  public updateConfiguredChannels(channels: readonly string[]): void {
+    const nextChannels = new Set(channels.map(normalizeChannel));
+    for (const channel of this.configuredChannels) {
+      if (!nextChannels.has(channel)) {
+        this.recoveryPolicy?.removeChannel(channel);
+        this.stableRecoveryGenerations.delete(channel);
       }
-    });
+    }
+    this.configuredChannels = nextChannels;
+  }
+
+  public async cancelPendingStarts(reason: string): Promise<void> {
+    this.shutdownRequested = true;
+    await Promise.all(
+      [...this.startingSessions].map(([channel, session]) =>
+        this.cancelStart(session, channel, reason),
+      ),
+    );
+  }
+
+  public async stopAll(reason: string): Promise<void> {
+    this.shutdownRequested = true;
+    const sessions = [...this.sessions];
+    const startingChannels = [...this.startingSessions.keys()];
+    this.sessions.clear();
+    const cancellation = this.cancelPendingStarts(reason);
+    const stops = sessions.map(([channel, session]) =>
+      this.runChannelExclusive(channel, () =>
+        this.stopSession(session, channel, reason),
+      ),
+    );
+    const pendingStarts = startingChannels.map((channel) =>
+      this.runChannelExclusive(channel, async () => undefined),
+    );
+    try {
+      await this.withSessionOperationTimeout(
+        Promise.all([cancellation, ...stops, ...pendingStarts]),
+        'session_stop_all_timeout',
+        { reason },
+      );
+    } catch {
+      // Shutdown 返回後，各頻道的 lifecycle timeout 仍會各自完成清理。
+    }
   }
 
   public async invalidate(channel: string, reason: string): Promise<void> {
@@ -211,7 +281,7 @@ export class DefaultSessionManager implements SessionManager {
       activeBefore: this.getActiveChannels(),
     });
 
-    await this.runExclusive(async () => {
+    await this.runChannelExclusive(channel, async () => {
       const session = this.sessions.get(channel);
       if (session === undefined) {
         this.safeLog('debug', 'session_invalidate_completed', {
@@ -222,6 +292,18 @@ export class DefaultSessionManager implements SessionManager {
           durationMs: Date.now() - startedAtMs,
         });
         return;
+      }
+
+      if (reason === 'page_crashed' || reason === 'page_closed') {
+        const decision = this.recoveryPolicy?.recordPageCrash(channel);
+        if (decision?.status === 'quarantined') {
+          this.safeLog('warn', 'channel_recovery_quarantined', {
+            channel,
+            retryAtMs: decision.retryAtMs,
+            reason,
+            consecutivePageCrashes: decision.consecutivePageCrashes,
+          });
+        }
       }
 
       this.sessions.delete(channel);
@@ -327,6 +409,7 @@ export class DefaultSessionManager implements SessionManager {
 
   private async startSession(
     channel: string,
+    recoveryGeneration?: number,
   ): Promise<BrowserNavigationOutcome | undefined> {
     for (let attempt = 1; attempt <= this.maxStartAttempts; attempt += 1) {
       let session: ChannelSession | undefined;
@@ -339,12 +422,26 @@ export class DefaultSessionManager implements SessionManager {
           maxAttempts: this.maxStartAttempts,
         });
         session = await this.factory.create(channel);
+        this.startingSessions.set(channel, session);
         await this.withSessionOperationTimeout(
           session.start(),
           'session_start_timeout',
           { channel, attempt },
         );
+        if (this.shutdownRequested) {
+          await this.stopSession(session, channel, 'shutdown');
+          return undefined;
+        }
         this.sessions.set(channel, session);
+        if (
+          recoveryGeneration !== undefined &&
+          this.recoveryPolicy?.markStable(channel, recoveryGeneration) === true
+        ) {
+          this.stableRecoveryGenerations.set(
+            normalizeChannel(channel),
+            recoveryGeneration,
+          );
+        }
         this.safeLog('debug', 'session_start_attempt_completed', {
           channel,
           attempt,
@@ -369,6 +466,11 @@ export class DefaultSessionManager implements SessionManager {
           isRetriableSessionStartError(safeError);
 
         if (!shouldRetry) {
+          if (isRecoverableSessionStartError(safeError)) {
+            this.recoveryPolicy?.recordStartFailure(channel);
+          } else if (recoveryGeneration !== undefined) {
+            this.recoveryPolicy?.cancelProbe(channel, recoveryGeneration);
+          }
           this.safeLog('error', 'session_start_failed', {
             channel,
             error: safeError,
@@ -387,6 +489,13 @@ export class DefaultSessionManager implements SessionManager {
 
         if (this.startRetryDelayMs > 0) {
           await this.sleep(this.startRetryDelayMs);
+        }
+      } finally {
+        if (
+          session !== undefined &&
+          this.startingSessions.get(channel) === session
+        ) {
+          this.startingSessions.delete(channel);
         }
       }
     }
@@ -411,19 +520,104 @@ export class DefaultSessionManager implements SessionManager {
     }
   }
 
+  private beginRecoveryProbe(channel: string): RecoveryProbeGate {
+    const policy = this.recoveryPolicy;
+    if (policy === undefined) {
+      return { allowed: true };
+    }
+    const state = policy.getState(channel);
+    const hasRecoveryHistory =
+      state.consecutivePageCrashes > 0 ||
+      state.consecutiveStartFailures > 0;
+    if (!hasRecoveryHistory) {
+      return { allowed: true };
+    }
+
+    const availability = policy.getAvailability(channel);
+    if (availability.status === 'quarantined') {
+      this.safeLog('warn', 'channel_recovery_quarantined', {
+        channel,
+        retryAtMs: availability.retryAtMs,
+        reason: 'quarantine_active',
+      });
+      return { allowed: false };
+    }
+    if (availability.status !== 'eligible') {
+      this.safeLog('debug', 'channel_recovery_deferred', {
+        channel,
+        reason: availability.status,
+        ...('retryAtMs' in availability
+          ? { retryAtMs: availability.retryAtMs }
+          : {}),
+      });
+      return { allowed: false };
+    }
+
+    const probe = policy.beginProbe(channel);
+    if (probe.status !== 'started') {
+      this.safeLog('debug', 'channel_recovery_deferred', {
+        channel,
+        reason: probe.status,
+      });
+      return { allowed: false };
+    }
+    this.safeLog('debug', 'channel_recovery_probe_started', {
+      channel,
+      recoveryGeneration: probe.recoveryGeneration,
+    });
+    return {
+      allowed: true,
+      recoveryGeneration: probe.recoveryGeneration,
+    };
+  }
+
+  private recordStableRecoveryResets(): void {
+    const policy = this.recoveryPolicy;
+    if (policy === undefined) {
+      return;
+    }
+    for (const [channel, recoveryGeneration] of this.stableRecoveryGenerations) {
+      const state = policy.getState(channel);
+      if (
+        state.recoveryGeneration === recoveryGeneration &&
+        state.consecutivePageCrashes === 0 &&
+        state.consecutiveStartFailures === 0 &&
+        state.stableSinceMs === undefined
+      ) {
+        this.stableRecoveryGenerations.delete(channel);
+        this.safeLog('debug', 'channel_recovery_reset', {
+          channel,
+          recoveryGeneration,
+        });
+      }
+    }
+  }
+
   private async cancelTimedOutStart(
     session: ChannelSession,
     channel: string,
   ): Promise<void> {
+    await this.cancelStart(session, channel, 'start_timeout');
+  }
+
+  private async cancelStart(
+    session: ChannelSession,
+    channel: string,
+    reason: string,
+  ): Promise<void> {
     if (session.cancelStart === undefined) {
       return;
     }
+    if (this.cancelledStartSessions.has(session)) {
+      return;
+    }
+    this.cancelledStartSessions.add(session);
 
     try {
       await this.withSessionOperationTimeout(
-        session.cancelStart('start_timeout'),
+        session.cancelStart(reason),
         'session_start_cancel_timeout',
-        { channel },
+        { channel, reason },
       );
     } catch (error: unknown) {
       this.safeLog('warn', 'session_start_cancel_failed', {
@@ -505,12 +699,23 @@ export class DefaultSessionManager implements SessionManager {
     }
   }
 
-  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.operationTail.then(operation, operation);
-    this.operationTail = result.then(
+  private async runChannelExclusive<T>(
+    channel: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.channelOperationTails.get(channel) ??
+      Promise.resolve();
+    const result = previous.then(operation, operation);
+    const tail = result.then(
       () => undefined,
       () => undefined,
     );
+    this.channelOperationTails.set(channel, tail);
+    void tail.then(() => {
+      if (this.channelOperationTails.get(channel) === tail) {
+        this.channelOperationTails.delete(channel);
+      }
+    });
     return result;
   }
 
@@ -580,16 +785,33 @@ function normalizePositiveInteger(
 }
 
 function isRetriableSessionStartError(message: string): boolean {
+  return !isFatalPrerequisiteError(message) &&
+    isRecoverableSessionStartError(message);
+}
+
+function isRecoverableSessionStartError(message: string): boolean {
   return /Target page, context or browser has been closed/iu.test(message) ||
     /browser(?: manager)? (?:has been )?closed/iu.test(message) ||
     /context .*closed/iu.test(message) ||
     /page .*closed/iu.test(message) ||
+    /target .*crashed/iu.test(message) ||
     /page\.goto: Timeout \d+ms exceeded/iu.test(message) ||
+    /導向非預期 Twitch URL/iu.test(message) ||
     /Browser Manager 尚未啟動/iu.test(message);
+}
+
+function isFatalPrerequisiteError(message: string): boolean {
+  return /auth(?:entication|orization)? failed/iu.test(message) ||
+    /configuration (?:error|invalid)/iu.test(message) ||
+    /storage[\s_-]?state (?:error|invalid|missing)/iu.test(message);
 }
 
 function isNavigationTimeoutError(message: string): boolean {
   return /page\.goto: Timeout \d+ms exceeded/iu.test(message);
+}
+
+function normalizeChannel(channel: string): string {
+  return channel.toLocaleLowerCase('en-US');
 }
 
 function safeErrorMessage(error: unknown): string {

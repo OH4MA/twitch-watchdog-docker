@@ -287,6 +287,24 @@ describe('DefaultWatchdogScheduler', () => {
     await firstRun;
   });
 
+  it('API polling 完成後不等待 session reconcile', async () => {
+    const reconcileGate = deferred<void>();
+    const harness = createHarness({ channels: ['live'] });
+    harness.getLiveStatuses.mockResolvedValue([status('live', true)]);
+    harness.reconcile.mockReturnValue(reconcileGate.promise);
+
+    await expect(harness.scheduler.runOnce()).resolves.toBeUndefined();
+
+    expect(harness.reconcile).toHaveBeenCalledWith(['live']);
+    expect(harness.scheduler.getSnapshot()).toEqual(
+      expect.objectContaining({
+        checkInFlight: false,
+        lastCheckedAt: CHECKED_AT,
+      }),
+    );
+    reconcileGate.resolve(undefined);
+  });
+
   it('start 立即執行首輪並依設定建立 interval，重複 start 不新增 timer', async () => {
     const timer = createTimer();
     const harness = createHarness({

@@ -14,6 +14,7 @@ twitch_api:
   access_token: fixture-access-token
 
 browser:
+  engine: chromium
   navigation_timeout_ms: 45000
   page_health_check_interval_seconds: 40
   reward_check_interval_seconds: 20

@@ -5,7 +5,10 @@ import {
   type StreamSelector,
 } from '../../src/scheduler/StreamSelector.js';
 import { DefaultWatchdogScheduler } from '../../src/scheduler/WatchdogScheduler.js';
-import { DefaultSessionManager } from '../../src/sessions/index.js';
+import {
+  DefaultReconcileCoordinator,
+  DefaultSessionManager,
+} from '../../src/sessions/index.js';
 import { TwitchApiClient } from '../../src/twitch/index.js';
 import { RecordingChannelSessionFactory } from '../helpers/recording-session-factory.js';
 import { createTestConfig } from '../helpers/test-config.js';
@@ -53,17 +56,22 @@ describe('Helix 到 session 協調整合', () => {
     const sessionManager = new DefaultSessionManager(sessionFactory, {
       logger: recordingLogger.logger,
     });
+    const reconcileCoordinator = new DefaultReconcileCoordinator({
+      sessionManager,
+      logger: recordingLogger.logger,
+    });
     const streamSelector: StreamSelector = { selectActiveChannels };
     const scheduler = new DefaultWatchdogScheduler({
       config,
       liveStatusProvider: twitchApiClient,
       streamSelector,
-      sessionManager,
+      reconcileCoordinator,
       logger: recordingLogger.logger,
       now: clock.date,
     });
 
     await scheduler.runOnce();
+    await reconcileCoordinator.waitForIdle();
 
     expect(sessionManager.getActiveChannels()).toEqual([
       'medium_priority',
@@ -77,6 +85,7 @@ describe('Helix 到 session 協調整合', () => {
     ]);
 
     await scheduler.runOnce();
+    await reconcileCoordinator.waitForIdle();
 
     expect(sessionManager.getActiveChannels()).toEqual([
       'high_priority',
@@ -95,6 +104,7 @@ describe('Helix 到 session 協調整合', () => {
 
     const eventsBeforeTemporaryFailure = [...sessionFactory.events];
     await scheduler.runOnce();
+    await reconcileCoordinator.waitForIdle();
 
     expect(sessionManager.getActiveChannels()).toEqual([
       'high_priority',

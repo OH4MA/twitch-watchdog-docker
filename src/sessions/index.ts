@@ -1,4 +1,11 @@
 export { DefaultSessionManager } from './SessionManager.js';
+export { DefaultReconcileCoordinator } from './ReconcileCoordinator.js';
+export { ChannelRecoveryPolicy } from './ChannelRecoveryPolicy.js';
+
+export type {
+  ReconcileCoordinator,
+  ReconcileCoordinatorOptions,
+} from './ReconcileCoordinator.js';
 
 export type {
   ChannelSession,

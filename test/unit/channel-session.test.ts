@@ -20,6 +20,10 @@ import type {
 import type { AppConfig } from '../../src/config/AppConfig.js';
 import { LOG_EVENTS } from '../../src/logging/index.js';
 import { SIDE_NAV_TOGGLE_SELECTOR } from '../../src/browser/SideNavCollapser.js';
+import {
+  createDefaultBrowserRecovery,
+  createDefaultBrowserSessionStart,
+} from '../helpers/test-config.js';
 
 type HealthMarker =
   | 'loginRequired'
@@ -53,6 +57,7 @@ function createConfig(
   return {
     channels: [CHANNEL],
     browser: {
+      engine: overrides.engine ?? 'firefox',
       navigationTimeoutMs: overrides.navigationTimeoutMs ?? 30_000,
       pageHealthCheckIntervalSeconds:
         overrides.pageHealthCheckIntervalSeconds ?? 60,
@@ -73,6 +78,10 @@ function createConfig(
       disableChat: overrides.disableChat ?? true,
       resourceTelemetryIntervalSeconds:
         overrides.resourceTelemetryIntervalSeconds ?? 300,
+      recovery:
+        overrides.recovery ?? createDefaultBrowserRecovery(),
+      sessionStart:
+        overrides.sessionStart ?? createDefaultBrowserSessionStart(),
       resourceGuard:
         overrides.resourceGuard ??
         ({
@@ -115,6 +124,7 @@ function createMockPage(input: {
   readonly finalUrl?: string;
   readonly reloadError?: Error;
   readonly reloadImplementation?: () => Promise<null>;
+  readonly screenshotImplementation?: () => Promise<Buffer>;
   readonly contentWarningClickError?: Error;
   readonly sideNavExpanded?: boolean;
   readonly channelPointsBalance?: string;
@@ -184,26 +194,46 @@ function createMockPage(input: {
   };
 
   const setDefaultNavigationTimeout = vi.fn();
-  const goto = vi.fn(async (url: string): Promise<null> => {
-    if (input.gotoImplementation !== undefined) {
-      await input.gotoImplementation();
+  const goto = vi.fn(
+    async (
+      url: string,
+      options?: { readonly signal?: AbortSignal },
+    ): Promise<null> => {
+      const signal = options?.signal;
+      if (signal?.aborted === true) {
+        throw new DOMException('Navigation aborted', 'AbortError');
+      }
+      if (input.gotoImplementation !== undefined) {
+        await raceWithAbort(signal, input.gotoImplementation());
+      }
+      if (input.gotoError !== undefined) {
+        throw input.gotoError;
+      }
+      currentUrl = input.finalUrl ?? url;
+      return null;
+    },
+  );
+  const reload = vi.fn(
+    async (options?: { readonly signal?: AbortSignal }): Promise<null> => {
+      const signal = options?.signal;
+      if (signal?.aborted === true) {
+        throw new DOMException('Navigation aborted', 'AbortError');
+      }
+      if (input.reloadImplementation !== undefined) {
+        await raceWithAbort(signal, input.reloadImplementation());
+      }
+      if (input.reloadError !== undefined) {
+        throw input.reloadError;
+      }
+      return null;
+    },
+  );
+  const screenshot = vi.fn(async (): Promise<Buffer> => {
+    if (input.screenshotImplementation !== undefined) {
+      return input.screenshotImplementation();
     }
-    if (input.gotoError !== undefined) {
-      throw input.gotoError;
-    }
-    currentUrl = input.finalUrl ?? url;
-    return null;
+    return Buffer.from('png-image');
   });
-  const reload = vi.fn(async (): Promise<null> => {
-    if (input.reloadImplementation !== undefined) {
-      return input.reloadImplementation();
-    }
-    if (input.reloadError !== undefined) {
-      throw input.reloadError;
-    }
-    return null;
-  });
-  const screenshot = vi.fn(async () => Buffer.from('png-image'));
   const evaluate = vi.fn(async () => ({
     loginRequired: marker === 'loginRequired',
     error: marker === 'error',
@@ -335,6 +365,34 @@ function deferred<T>(): {
   };
 }
 
+async function raceWithAbort<T>(
+  signal: AbortSignal | undefined,
+  promise: Promise<T>,
+): Promise<T> {
+  if (signal === undefined) {
+    return promise;
+  }
+  if (signal.aborted) {
+    throw new DOMException('Navigation aborted', 'AbortError');
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(new DOMException('Navigation aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -360,6 +418,7 @@ describe('DefaultChannelSession', () => {
     );
     expect(mockPage.goto).toHaveBeenCalledWith(TARGET_URL, {
       waitUntil: 'domcontentloaded',
+      signal: expect.any(AbortSignal),
     });
     expect(session.state).toBe('watching');
 
@@ -389,7 +448,7 @@ describe('DefaultChannelSession', () => {
     expect(session.state).toBe('failed');
   });
 
-  it('取消進行中的 start 會立即要求關閉 page 並阻止 late success', async () => {
+  it('取消進行中的 start 會 abort 底層 goto、關閉 page 並阻止 late success', async () => {
     const navigation = deferred<null>();
     const mockPage = createMockPage({
       gotoImplementation: () => navigation.promise,
@@ -411,11 +470,42 @@ describe('DefaultChannelSession', () => {
     expect(browser.closePage).toHaveBeenCalledWith(CHANNEL);
 
     navigation.resolve(null);
-    await expect(startPromise).rejects.toThrow(
-      'Session start cancelled: start_timeout',
-    );
+    await expect(startPromise).rejects.toThrow('Navigation aborted');
     expect(session.state).toBe('failed');
     expect(browser.closePage).toHaveBeenCalledTimes(2);
+  });
+
+  it('start 被取消時即使 goto 永不返回，abort 也會讓 start 立即結束且不留下 orphan page', async () => {
+    const never = new Promise<null>(() => undefined);
+    const mockPage = createMockPage({
+      gotoImplementation: () => never,
+    });
+    const browser = createBrowserManager(mockPage.page);
+    const logs = createLogger();
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+      logger: logs.logger,
+    });
+
+    const startPromise = session.start();
+    await vi.waitFor(() => {
+      expect(mockPage.goto).toHaveBeenCalledOnce();
+    });
+
+    await session.cancelStart('start_timeout');
+
+    await expect(startPromise).rejects.toThrow('Navigation aborted');
+    expect(session.state).toBe('failed');
+    expect(browser.closePage).toHaveBeenCalledWith(CHANNEL);
+    expect(logs.debug).toHaveBeenCalledWith('watch_start_aborted', {
+      channel: CHANNEL,
+      reason: 'start_timeout',
+      outcome: 'aborted',
+      error: expect.stringMatching(/aborted/iu),
+    });
   });
 
   it('start 導向非預期 origin 時立即關閉 page 且不啟動 session', async () => {
@@ -1325,6 +1415,7 @@ describe('DefaultChannelSession', () => {
     expect(mockPage.reload).toHaveBeenCalledOnce();
     expect(mockPage.reload).toHaveBeenCalledWith({
       waitUntil: 'domcontentloaded',
+      signal: expect.any(AbortSignal),
     });
     await vi.waitFor(() => {
       expect(onPageRefresh).toHaveBeenCalledWith({
@@ -1337,29 +1428,63 @@ describe('DefaultChannelSession', () => {
     await session.stop('test_complete');
   });
 
-  it('stop 等待 page operation 超時後會強制關閉 page', async () => {
-    vi.useFakeTimers();
+  it('stop 會 abort 進行中的 reload 並快速完成清理', async () => {
     const reload = deferred<null>();
     const mockPage = createMockPage({
       marker: 'liveContent',
       reloadImplementation: () => reload.promise,
     });
     const browser = createBrowserManager(mockPage.page);
+    const logs = createLogger();
     const session = new DefaultChannelSession({
       channel: CHANNEL,
-      config: createConfig({
-        pageRefreshIntervalSeconds: 1,
-      }),
+      config: createConfig(),
+      browserManager: browser.manager,
+      rewardClaimer: createRewardClaimer().claimer,
+      logger: logs.logger,
+    });
+    await session.start();
+
+    const refreshPromise = session.refreshNow();
+    await vi.waitFor(() => {
+      expect(mockPage.reload).toHaveBeenCalledOnce();
+    });
+
+    await expect(session.stop('shutdown')).resolves.toBeUndefined();
+    expect(browser.closePage).toHaveBeenCalledOnce();
+    expect(session.state).toBe('stopped');
+    expect(logs.debug).toHaveBeenCalledWith('session_operation_aborted', {
+      channel: CHANNEL,
+      reason: 'shutdown',
+      outcome: 'aborted',
+    });
+
+    reload.resolve(null);
+    await expect(refreshPromise).rejects.toThrow('Navigation aborted');
+  });
+
+  it('stop 等待無法 abort 的 page operation 超時後會強制關閉 page', async () => {
+    vi.useFakeTimers();
+    const hang = new Promise<Buffer>(() => undefined);
+    const mockPage = createMockPage({
+      marker: 'liveContent',
+      screenshotImplementation: () => hang,
+    });
+    const browser = createBrowserManager(mockPage.page);
+    const session = new DefaultChannelSession({
+      channel: CHANNEL,
+      config: createConfig(),
       browserManager: browser.manager,
       rewardClaimer: createRewardClaimer().claimer,
       pageOperationDrainTimeoutMs: 1_000,
     });
     await session.start();
 
-    vi.advanceTimersByTime(61_000);
-    await vi.waitFor(() => {
-      expect(mockPage.reload).toHaveBeenCalledOnce();
-    });
+    const screenshotPromise = session.captureScreenshot();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mockPage.screenshot).toHaveBeenCalledOnce();
 
     const stopPromise = session.stop('shutdown');
     await Promise.resolve();
@@ -1372,8 +1497,7 @@ describe('DefaultChannelSession', () => {
     expect(browser.closePage).toHaveBeenCalledOnce();
     expect(session.state).toBe('stopped');
 
-    reload.resolve(null);
-    await Promise.resolve();
+    void screenshotPromise.catch(() => undefined);
   });
 
   it('RewardClaimer 拋錯時轉為 click_failed 且避免 timer rejection', async () => {

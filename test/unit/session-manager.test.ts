@@ -7,6 +7,11 @@ import {
   type ChannelSessionPointsResult,
   type SessionManagerLogger,
 } from '../../src/sessions/SessionManager.js';
+import { ChannelRecoveryPolicy } from '../../src/sessions/ChannelRecoveryPolicy.js';
+import {
+  createDefaultBrowserRecovery,
+  createDefaultBrowserSessionStart,
+} from '../helpers/test-config.js';
 
 interface TestSession extends ChannelSession {
   readonly secret: string;
@@ -106,6 +111,14 @@ function createGate(): {
   });
 
   return { promise, release };
+}
+
+function createRecoveryPolicy(now: () => number): ChannelRecoveryPolicy {
+  return new ChannelRecoveryPolicy({
+    recovery: createDefaultBrowserRecovery(),
+    sessionStart: createDefaultBrowserSessionStart(),
+    now,
+  });
 }
 
 describe('DefaultSessionManager', () => {
@@ -283,6 +296,126 @@ describe('DefaultSessionManager', () => {
       'session_start_failed',
       expect.objectContaining({ channel: 'failed' }),
     );
+  });
+
+  it('page crash 只對該頻道 backoff，其他 active session 保持運作', async () => {
+    let nowMs = 0;
+    const policy = createRecoveryPolicy(() => nowMs);
+    const logger = createLogger();
+    const factory = createFactory();
+    const manager = new DefaultSessionManager(factory, {
+      logger,
+      recoveryPolicy: policy,
+      configuredChannels: ['a', 'b', 'c'],
+    });
+    await manager.reconcile(['a', 'b', 'c']);
+
+    await manager.invalidate('a', 'page_crashed');
+    await manager.reconcile(['a', 'b', 'c']);
+
+    expect(manager.getActiveChannels()).toEqual(['b', 'c']);
+    expect(factory.create).toHaveBeenCalledTimes(3);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'channel_recovery_deferred',
+      expect.objectContaining({ channel: 'a', retryAtMs: 30_000 }),
+    );
+
+    nowMs = 30_000;
+    await manager.reconcile(['a', 'b', 'c']);
+    expect(manager.getActiveChannels()).toEqual(['a', 'b', 'c']);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'channel_recovery_probe_started',
+      expect.objectContaining({ channel: 'a', recoveryGeneration: 1 }),
+    );
+
+    nowMs += 1_800_000;
+    await manager.reconcile(['a', 'b', 'c']);
+    expect(policy.getState('a').consecutivePageCrashes).toBe(0);
+    expect(logger.debug).toHaveBeenCalledWith(
+      'channel_recovery_reset',
+      { channel: 'a', recoveryGeneration: 1 },
+    );
+  });
+
+  it('quarantine 到期前不啟動，到期後只啟動一個 probe', async () => {
+    let nowMs = 0;
+    const policy = createRecoveryPolicy(() => nowMs);
+    for (const crashAtMs of [0, 30_000, 90_000, 210_000]) {
+      nowMs = crashAtMs;
+      policy.recordPageCrash('channel');
+    }
+    const logger = createLogger();
+    const factory = createFactory();
+    const manager = new DefaultSessionManager(factory, {
+      logger,
+      recoveryPolicy: policy,
+      configuredChannels: ['channel'],
+    });
+
+    await manager.reconcile(['channel']);
+    expect(factory.create).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'channel_recovery_quarantined',
+      expect.objectContaining({ channel: 'channel' }),
+    );
+
+    nowMs = 1_110_000;
+    await Promise.all([
+      manager.reconcile(['channel']),
+      manager.reconcile(['channel']),
+    ]);
+    expect(factory.create).toHaveBeenCalledOnce();
+    expect(manager.getActiveChannels()).toEqual(['channel']);
+  });
+
+  it('recoverable start failure 進入 cooldown，fatal prerequisite 不計入', async () => {
+    const recoverablePolicy = createRecoveryPolicy(() => 0);
+    const recoverableFactory = createFactory(() =>
+      createSession('recoverable', {
+        onStart: async () => {
+          throw new Error('Target page, context or browser has been closed');
+        },
+      }));
+    const recoverable = new DefaultSessionManager(recoverableFactory, {
+      recoveryPolicy: recoverablePolicy,
+      configuredChannels: ['recoverable'],
+    });
+    await recoverable.reconcile(['recoverable']);
+    await recoverable.reconcile(['recoverable']);
+    expect(recoverableFactory.create).toHaveBeenCalledOnce();
+    expect(
+      recoverablePolicy.getState('recoverable').consecutiveStartFailures,
+    ).toBe(1);
+
+    const fatalPolicy = createRecoveryPolicy(() => 0);
+    const fatalFactory = createFactory(() =>
+      createSession('fatal', {
+        onStart: async () => {
+          throw new Error('authentication failed');
+        },
+      }));
+    const fatal = new DefaultSessionManager(fatalFactory, {
+      recoveryPolicy: fatalPolicy,
+      configuredChannels: ['fatal'],
+    });
+    await fatal.reconcile(['fatal']);
+    await fatal.reconcile(['fatal']);
+    expect(fatalFactory.create).toHaveBeenCalledTimes(2);
+    expect(fatalPolicy.getState('fatal').consecutiveStartFailures).toBe(0);
+  });
+
+  it('只有從 configured channels 移除時才清除 recovery state', async () => {
+    const policy = createRecoveryPolicy(() => 0);
+    policy.recordPageCrash('removed');
+    const manager = new DefaultSessionManager(createFactory(), {
+      recoveryPolicy: policy,
+      configuredChannels: ['removed', 'kept'],
+    });
+
+    await manager.reconcile([]);
+    expect(policy.getState('removed').consecutivePageCrashes).toBe(1);
+    manager.updateConfiguredChannels(['kept']);
+    expect(policy.getState('removed').consecutivePageCrashes).toBe(0);
   });
 
   it('session start 卡住時會 timeout 並繼續啟動後續頻道', async () => {
@@ -757,6 +890,94 @@ describe('DefaultSessionManager', () => {
 
     expect(session.stop).toHaveBeenCalledWith('page_crashed');
     expect(manager.getActiveChannels()).toEqual([]);
+  });
+
+  it('單一頻道 start 卡住不會阻塞其他頻道 invalidate', async () => {
+    const startEntered = createGate();
+    const allowStart = createGate();
+    const sessions = new Map<string, TestSession>();
+    const manager = new DefaultSessionManager(createFactory((channel) => {
+      const session = createSession(channel, {
+        onStart:
+          channel === 'stuck'
+            ? async () => {
+                startEntered.release();
+                await allowStart.promise;
+              }
+            : undefined,
+      });
+      sessions.set(channel, session);
+      return session;
+    }));
+    await manager.reconcile(['active']);
+
+    const reconcile = manager.reconcile(['active', 'stuck']);
+    await startEntered.promise;
+    await manager.invalidate('active', 'page_crashed');
+
+    expect(sessions.get('active')?.stop).toHaveBeenCalledWith('page_crashed');
+    expect(manager.getActiveChannels()).toEqual([]);
+
+    allowStart.release();
+    await reconcile;
+  });
+
+  it('stopAll 會取消進行中的 start 後在有限時間內完成', async () => {
+    const startEntered = createGate();
+    const startGate = createGate();
+    const session = createSession('channel', {
+      onStart: async () => {
+        startEntered.release();
+        await startGate.promise;
+      },
+      onCancelStart: async () => {
+        startGate.release();
+      },
+    });
+    const manager = new DefaultSessionManager(
+      createFactory(() => session),
+      { sessionOperationTimeoutMs: 1_000 },
+    );
+
+    const reconcile = manager.reconcile(['channel']);
+    await startEntered.promise;
+    await manager.stopAll('shutdown');
+    await reconcile;
+
+    expect(session.cancelStart).toHaveBeenCalledWith('shutdown');
+    expect(session.stop).toHaveBeenCalled();
+    expect(manager.getActiveChannels()).toEqual([]);
+  });
+
+  it('cancelStart 未解除卡住操作時 stopAll 仍會 timeout 完成', async () => {
+    vi.useFakeTimers();
+    try {
+      const startEntered = createGate();
+      const never = createGate();
+      const session = createSession('channel', {
+        onStart: async () => {
+          startEntered.release();
+          await never.promise;
+        },
+      });
+      const manager = new DefaultSessionManager(
+        createFactory(() => session),
+        { sessionOperationTimeoutMs: 1_000 },
+      );
+
+      const reconcile = manager.reconcile(['channel']);
+      await startEntered.promise;
+      const stopAll = manager.stopAll('shutdown');
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(stopAll).resolves.toBeUndefined();
+      await reconcile;
+
+      expect(session.cancelStart).toHaveBeenCalledWith('shutdown');
+      expect(manager.getActiveChannels()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('輸入只對完全相同字串去重，大小寫不同視為不同頻道', async () => {

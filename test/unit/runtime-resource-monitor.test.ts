@@ -136,6 +136,66 @@ describe('RuntimeResourceMonitor', () => {
     await monitor.stop();
   });
 
+  it('warning latch 未降到 reset 門檻前 snapshot 維持 warning', async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let sampleIndex = 0;
+    const logger = createLogger();
+    const samples = [
+      {
+        sampledAtMonotonicMs: 0,
+        memoryCurrentBytes: mibToBytes(4_100),
+        events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
+      },
+      {
+        sampledAtMonotonicMs: 2_000,
+        memoryCurrentBytes: mibToBytes(3_900),
+        events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
+      },
+      {
+        sampledAtMonotonicMs: 4_000,
+        memoryCurrentBytes: mibToBytes(3_800),
+        events: { high: 0n, max: 0n, oom: 0n, oomKill: 0n },
+      },
+    ];
+    const readNextSnapshot = async () => {
+      const current = samples[Math.min(sampleIndex, samples.length - 1)]!;
+      sampleIndex += 1;
+      return current;
+    };
+    const monitor = new RuntimeResourceMonitor({
+      browserManager: {
+        getPageCount: () => 1,
+        restart: vi.fn(),
+      },
+      sessionManager: { getActiveChannels: () => ['one'] },
+      logger,
+      intervalSeconds: 2,
+      resourceGuard: createDefaultResourceGuard(3, {
+        scaleWithStreams: false,
+      }),
+      now: () => now,
+      cgroupReader: {
+        probe: async () => ({ available: true, rootPath: '/sys/fs/cgroup' }),
+        readSnapshot: readNextSnapshot,
+        readPolicySnapshot: readNextSnapshot,
+      } as unknown as CgroupV2Reader,
+    });
+
+    await monitor.start();
+    now = 2_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+    now = 4_000;
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    const states = logger.info.mock.calls
+      .filter(([event]) => event === 'runtime_resource_snapshot')
+      .map(([, fields]) => fields?.resourceGuardState);
+    expect(states).toEqual(['warning', 'warning', 'idle']);
+
+    await monitor.stop();
+  });
+
   it('browser recycle 進行中仍會偵測 cgroup OOM 並要求重啟容器', async () => {
     vi.useFakeTimers();
     const logger = createLogger();
@@ -214,6 +274,7 @@ describe('RuntimeResourceMonitor', () => {
       memoryMaxBytes: mibToBytes(8_000),
       memoryPeakBytes: mibToBytes(1_500),
       pidsCurrent: 20n,
+      pidsMax: 512n,
       cpu: { usageUsec: 100n },
     }));
     const readPolicySnapshot = vi.fn(async () => createSnapshot());
@@ -239,6 +300,10 @@ describe('RuntimeResourceMonitor', () => {
     await monitor.start();
     expect(readSnapshot).toHaveBeenCalledOnce();
     expect(readPolicySnapshot).not.toHaveBeenCalled();
+    expect(monitor.getLatestResourceLimits()).toEqual({
+      memoryMaxBytes: Number(mibToBytes(8_000)),
+      pidsMax: 512,
+    });
 
     for (now = 2_000; now < 60_000; now += 2_000) {
       await vi.advanceTimersByTimeAsync(2_000);

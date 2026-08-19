@@ -1,8 +1,12 @@
 export {
+  BROWSER_ENGINES,
   LOG_LEVELS,
   STREAM_QUALITIES,
   type AppConfig,
   type BrowserConfig,
+  type BrowserEngine,
+  type BrowserRecoveryConfig,
+  type BrowserSessionStartConfig,
   type DiscordConfig,
   type LogLevel,
   type StreamQuality,

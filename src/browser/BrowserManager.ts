@@ -57,30 +57,6 @@ const DEFAULT_RESTART_BACKOFF_MAX_MS = 30_000;
 const DEFAULT_MAX_AUTOMATIC_RESTART_ATTEMPTS = 3;
 const DEFAULT_RESTART_ATTEMPT_RESET_MS = 60_000;
 const DEFAULT_RESOURCE_CLOSE_TIMEOUT_MS = 10_000;
-const DEFAULT_CHANNEL_CRASH_RECYCLE_THRESHOLD = 2;
-const DEFAULT_CHANNEL_CRASH_WINDOW_MS = 5 * 60_000;
-const DEFAULT_GLOBAL_PAGE_CRASH_RECYCLE_THRESHOLD = 3;
-const DEFAULT_GLOBAL_PAGE_CRASH_WINDOW_MS = 10 * 60_000;
-const DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD = 2;
-const DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_WINDOW_MS = 5 * 60_000;
-const DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD = 3;
-const DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_WINDOW_MS = 5 * 60_000;
-const DEFAULT_BROWSER_FAILURE_CONTAINER_THRESHOLD = 3;
-const DEFAULT_BROWSER_FAILURE_WINDOW_MS = 10 * 60_000;
-
-interface NavigationTimeoutEntry {
-  readonly channel: string;
-  readonly timestampMs: number;
-}
-
-interface NavigationTimeoutRecoveryDecision {
-  readonly reason:
-    | 'channel_navigation_timeout_loop'
-    | 'global_navigation_timeout_loop';
-  readonly channel: string;
-  readonly channelTimeoutCount: number;
-  readonly globalTimeoutCount: number;
-}
 
 export class BrowserTerminationError extends Error {
   public constructor(message: string) {
@@ -109,10 +85,8 @@ export class DefaultBrowserManager implements BrowserManager {
   private readonly maxAutomaticRestartAttempts: number;
   private readonly restartAttemptResetMs: number;
   private readonly resourceCloseTimeoutMs: number;
-  private readonly channelCrashRecycleThreshold: number;
-  private readonly channelCrashWindowMs: number;
-  private readonly globalPageCrashRecycleThreshold: number;
-  private readonly globalPageCrashWindowMs: number;
+  private readonly multiChannelCrashThreshold: number;
+  private readonly multiChannelCrashWindowMs: number;
   private readonly browserFailureContainerThreshold: number;
   private readonly browserFailureWindowMs: number;
 
@@ -120,6 +94,9 @@ export class DefaultBrowserManager implements BrowserManager {
   private context: BrowserContextAdapter | undefined;
   private unsubscribeBrowser: (() => void) | undefined;
   private readonly pages = new Map<string, PageEntry>();
+  private browserGeneration = 0;
+  private nextPageGeneration = 0;
+  private trackedChannels = new Set<string>();
   private operationTail: Promise<void> = Promise.resolve();
   private navigationOutcomeTail: Promise<void> = Promise.resolve();
   private restartFlight: Promise<void> | undefined;
@@ -131,11 +108,8 @@ export class DefaultBrowserManager implements BrowserManager {
   private automaticRestartAttempts = 0;
   private lastBrowserCrashAt: number | undefined;
   private pendingForcedRecycleReason: string | undefined;
-  private readonly channelCrashTimestamps = new Map<string, number[]>();
-  private globalPageCrashTimestamps: number[] = [];
-  private readonly channelNavigationTimeoutTimestamps =
-    new Map<string, number[]>();
-  private globalNavigationTimeouts: NavigationTimeoutEntry[] = [];
+  private correlatedPageCrashes = new Map<string, number>();
+  private pageCrashRecycleGeneration: number | undefined;
   private browserFailureTimestamps: number[] = [];
 
   public constructor(
@@ -174,30 +148,14 @@ export class DefaultBrowserManager implements BrowserManager {
       dependencies.resourceCloseTimeoutMs,
       DEFAULT_RESOURCE_CLOSE_TIMEOUT_MS,
     );
-    this.channelCrashRecycleThreshold = positiveInteger(
-      dependencies.channelCrashRecycleThreshold,
-      DEFAULT_CHANNEL_CRASH_RECYCLE_THRESHOLD,
-    );
-    this.channelCrashWindowMs = positiveInteger(
-      dependencies.channelCrashWindowMs,
-      DEFAULT_CHANNEL_CRASH_WINDOW_MS,
-    );
-    this.globalPageCrashRecycleThreshold = positiveInteger(
-      dependencies.globalPageCrashRecycleThreshold,
-      DEFAULT_GLOBAL_PAGE_CRASH_RECYCLE_THRESHOLD,
-    );
-    this.globalPageCrashWindowMs = positiveInteger(
-      dependencies.globalPageCrashWindowMs,
-      DEFAULT_GLOBAL_PAGE_CRASH_WINDOW_MS,
-    );
-    this.browserFailureContainerThreshold = positiveInteger(
-      dependencies.browserFailureContainerThreshold,
-      DEFAULT_BROWSER_FAILURE_CONTAINER_THRESHOLD,
-    );
-    this.browserFailureWindowMs = positiveInteger(
-      dependencies.browserFailureWindowMs,
-      DEFAULT_BROWSER_FAILURE_WINDOW_MS,
-    );
+    this.multiChannelCrashThreshold =
+      config.browser.recovery.multiChannelCrashThreshold;
+    this.multiChannelCrashWindowMs =
+      config.browser.recovery.multiChannelCrashWindowSeconds * 1_000;
+    this.browserFailureContainerThreshold =
+      config.browser.recovery.browserFailureContainerThreshold;
+    this.browserFailureWindowMs =
+      config.browser.recovery.browserFailureWindowSeconds * 1_000;
   }
 
   public async start(): Promise<void> {
@@ -264,8 +222,13 @@ export class DefaultBrowserManager implements BrowserManager {
 
       try {
         adapter = await context.newPage();
-        const entry = this.attachPageUnlocked(channel, adapter);
+        const entry = this.attachPageUnlocked(
+          channel,
+          adapter,
+          this.browserGeneration,
+        );
         this.pages.set(channel, entry);
+        this.trackedChannels.add(channel);
         return adapter.page;
       } catch (error: unknown) {
         if (adapter !== undefined) {
@@ -304,6 +267,9 @@ export class DefaultBrowserManager implements BrowserManager {
         if (this.pages.get(channel) === entry) {
           this.pages.delete(channel);
         }
+        if (entry.browserGeneration === this.browserGeneration) {
+          this.trackedChannels.delete(channel);
+        }
         return;
       }
 
@@ -313,6 +279,9 @@ export class DefaultBrowserManager implements BrowserManager {
       // / BrowserManager lock cycles).
       if (this.pages.get(channel) === entry) {
         this.pages.delete(channel);
+      }
+      if (entry.browserGeneration === this.browserGeneration) {
+        this.trackedChannels.delete(channel);
       }
       scheduleRecycleReason =
         outcome.status === 'timed_out'
@@ -364,6 +333,14 @@ export class DefaultBrowserManager implements BrowserManager {
 
   public getPageCount(): number {
     return this.pages.size;
+  }
+
+  public getBrowserGeneration(): number {
+    return this.browserGeneration;
+  }
+
+  public getBrowserVersion(): string | null {
+    return this.browser?.getVersion() ?? null;
   }
 
   public reportNavigationOutcomes(
@@ -430,6 +407,7 @@ export class DefaultBrowserManager implements BrowserManager {
           this.logger.warn(LOG_EVENTS.BROWSER_RESTARTED, {
             mode: 'manual',
             affectedChannelCount: invalidatedChannels.length,
+            browserGeneration: this.browserGeneration,
           });
           this.emitBrowserRestarted({ mode: 'manual' });
         } catch (error: unknown) {
@@ -473,12 +451,16 @@ export class DefaultBrowserManager implements BrowserManager {
     let unsubscribeBrowser: (() => void) | undefined;
 
     try {
+      const nextBrowserGeneration = this.browserGeneration + 1;
       browser = await this.launcher.launch({
         headless: this.config.headless,
       });
       const launchedBrowser = browser;
       unsubscribeBrowser = browser.onDisconnected(() => {
-        void this.handleBrowserDisconnected(launchedBrowser);
+        void this.handleBrowserDisconnected(
+          launchedBrowser,
+          nextBrowserGeneration,
+        );
       });
       context = await browser.newContext({
         storageState: this.config.storageStatePath,
@@ -497,7 +479,10 @@ export class DefaultBrowserManager implements BrowserManager {
       this.browser = browser;
       this.context = context;
       this.unsubscribeBrowser = unsubscribeBrowser;
-      this.clearNavigationTimeouts();
+      this.browserGeneration = nextBrowserGeneration;
+      this.trackedChannels = new Set<string>();
+      this.correlatedPageCrashes = new Map<string, number>();
+      this.pageCrashRecycleGeneration = undefined;
     } catch (error: unknown) {
       unsubscribeBrowser?.();
       await this.closeResourcesUnlocked(
@@ -516,9 +501,13 @@ export class DefaultBrowserManager implements BrowserManager {
   private attachPageUnlocked(
     channel: string,
     adapter: BrowserPageAdapter,
+    browserGeneration: number,
   ): PageEntry {
+    const pageGeneration = ++this.nextPageGeneration;
     const entry: PageEntry = {
       adapter,
+      browserGeneration,
+      pageGeneration,
       unsubscribeCrash: () => undefined,
       unsubscribeClose: () => undefined,
       unsubscribePopup: () => undefined,
@@ -526,10 +515,10 @@ export class DefaultBrowserManager implements BrowserManager {
 
     try {
       entry.unsubscribeCrash = adapter.onCrash(() => {
-        void this.handlePageInvalidation(channel, adapter, 'page_crashed');
+        void this.handlePageInvalidation(channel, entry, 'page_crashed');
       });
       entry.unsubscribeClose = adapter.onClose(() => {
-        void this.handlePageInvalidation(channel, adapter, 'page_closed');
+        void this.handlePageInvalidation(channel, entry, 'page_closed');
       });
       entry.unsubscribePopup = adapter.onPopup((popup) => {
         void this.closeUnexpectedPopup(channel, popup);
@@ -543,14 +532,10 @@ export class DefaultBrowserManager implements BrowserManager {
 
   private reattachPageListeners(channel: string, entry: PageEntry): void {
     entry.unsubscribeCrash = entry.adapter.onCrash(() => {
-      void this.handlePageInvalidation(
-        channel,
-        entry.adapter,
-        'page_crashed',
-      );
+      void this.handlePageInvalidation(channel, entry, 'page_crashed');
     });
     entry.unsubscribeClose = entry.adapter.onClose(() => {
-      void this.handlePageInvalidation(channel, entry.adapter, 'page_closed');
+      void this.handlePageInvalidation(channel, entry, 'page_closed');
     });
     entry.unsubscribePopup = entry.adapter.onPopup((popup) => {
       void this.closeUnexpectedPopup(channel, popup);
@@ -576,7 +561,7 @@ export class DefaultBrowserManager implements BrowserManager {
 
   private async handlePageInvalidation(
     channel: string,
-    adapter: BrowserPageAdapter,
+    invalidatedEntry: PageEntry,
     reason: Extract<
       BrowserInvalidationReason,
       'page_crashed' | 'page_closed'
@@ -587,13 +572,15 @@ export class DefaultBrowserManager implements BrowserManager {
       channel,
       reason,
       pageCountBefore: this.pages.size,
+      browserGeneration: invalidatedEntry.browserGeneration,
+      pageGeneration: invalidatedEntry.pageGeneration,
     });
     let shouldNotify: boolean;
 
     try {
       shouldNotify = await this.runExclusive(async () => {
         const entry = this.pages.get(channel);
-        if (entry === undefined || entry.adapter !== adapter) {
+        if (entry === undefined || entry !== invalidatedEntry) {
           this.logger.debug('browser_page_invalidation_completed', {
             channel,
             reason,
@@ -601,6 +588,8 @@ export class DefaultBrowserManager implements BrowserManager {
             notified: false,
             pageCountAfter: this.pages.size,
             durationMs: Date.now() - startedAtMs,
+            browserGeneration: invalidatedEntry.browserGeneration,
+            pageGeneration: invalidatedEntry.pageGeneration,
           });
           return false;
         }
@@ -609,10 +598,18 @@ export class DefaultBrowserManager implements BrowserManager {
         this.detachPageListeners(entry);
 
         if (reason === 'page_crashed') {
-          await this.closePageAdapterForCleanup(adapter, channel, 'crash');
+          await this.closePageAdapterForCleanup(
+            invalidatedEntry.adapter,
+            channel,
+            'crash',
+          );
         }
 
-        this.logger.warn(reason, { channel });
+        this.logger.warn(reason, {
+          channel,
+          browserGeneration: invalidatedEntry.browserGeneration,
+          pageGeneration: invalidatedEntry.pageGeneration,
+        });
         this.logger.debug('browser_page_invalidation_completed', {
           channel,
           reason,
@@ -620,6 +617,8 @@ export class DefaultBrowserManager implements BrowserManager {
           notified: true,
           pageCountAfter: this.pages.size,
           durationMs: Date.now() - startedAtMs,
+          browserGeneration: invalidatedEntry.browserGeneration,
+          pageGeneration: invalidatedEntry.pageGeneration,
         });
         return true;
       });
@@ -638,15 +637,22 @@ export class DefaultBrowserManager implements BrowserManager {
         channel,
         reason,
         durationMs: Date.now() - startedAtMs,
+        browserGeneration: invalidatedEntry.browserGeneration,
+        pageGeneration: invalidatedEntry.pageGeneration,
       });
       if (reason === 'page_crashed') {
-        this.recordPageCrash(channel);
+        this.recordPageCrash(
+          channel,
+          invalidatedEntry.browserGeneration,
+          invalidatedEntry.pageGeneration,
+        );
       }
     }
   }
 
   private async handleBrowserDisconnected(
     disconnectedBrowser: BrowserAdapter,
+    disconnectedBrowserGeneration: number,
   ): Promise<void> {
     let invalidatedChannels: string[] = [];
     let restartSchedule: RestartSchedule | undefined;
@@ -658,13 +664,15 @@ export class DefaultBrowserManager implements BrowserManager {
           return;
         }
 
-        invalidatedChannels = [...this.pages.keys()];
+        invalidatedChannels = [...this.trackedChannels];
         this.recoveryEpoch += 1;
         const recoveryEpoch = this.recoveryEpoch;
         const resources = this.detachResourcesUnlocked();
 
         this.logger.warn('browser_disconnected', {
+          affectedChannels: invalidatedChannels,
           affectedChannelCount: invalidatedChannels.length,
+          browserGeneration: disconnectedBrowserGeneration,
         });
         await this.closeResourcesUnlocked(resources, 'disconnect');
 
@@ -812,6 +820,7 @@ export class DefaultBrowserManager implements BrowserManager {
       this.logger.warn(LOG_EVENTS.BROWSER_RESTARTED, {
         mode: 'automatic',
         attempt: schedule.attempt,
+        browserGeneration: this.browserGeneration,
       });
       this.emitBrowserRestarted({ mode: 'automatic' });
     });
@@ -839,6 +848,7 @@ export class DefaultBrowserManager implements BrowserManager {
     this.context = undefined;
     this.unsubscribeBrowser = undefined;
     this.pages.clear();
+    this.trackedChannels = new Set<string>();
     resources.unsubscribeBrowser?.();
     for (const entry of resources.pages) {
       this.detachPageListeners(entry);
@@ -1048,41 +1058,44 @@ export class DefaultBrowserManager implements BrowserManager {
     }
   }
 
-  private recordPageCrash(channel: string): void {
-    const nowMs = this.now();
-    const channelTimes = evictOldTimestamps(
-      this.channelCrashTimestamps.get(channel) ?? [],
-      nowMs,
-      this.channelCrashWindowMs,
-    );
-    channelTimes.push(nowMs);
-    this.channelCrashTimestamps.set(channel, channelTimes);
-
-    this.globalPageCrashTimestamps = evictOldTimestamps(
-      this.globalPageCrashTimestamps,
-      nowMs,
-      this.globalPageCrashWindowMs,
-    );
-    this.globalPageCrashTimestamps.push(nowMs);
-
-    const channelNeedsRecycle =
-      channelTimes.length >= this.channelCrashRecycleThreshold;
-    const globalNeedsRecycle =
-      this.globalPageCrashTimestamps.length >=
-      this.globalPageCrashRecycleThreshold;
-
-    if (!channelNeedsRecycle && !globalNeedsRecycle) {
+  private recordPageCrash(
+    channel: string,
+    browserGeneration: number,
+    pageGeneration: number,
+  ): void {
+    if (
+      browserGeneration !== this.browserGeneration ||
+      this.browser === undefined ||
+      this.context === undefined ||
+      this.restartFlight !== undefined ||
+      this.pageCrashRecycleGeneration === browserGeneration
+    ) {
       return;
     }
 
-    const reason = channelNeedsRecycle
-      ? 'channel_page_crash_loop'
-      : 'global_page_crash_loop';
+    const nowMs = this.now();
+    for (const [crashedChannel, timestampMs] of this.correlatedPageCrashes) {
+      if (nowMs - timestampMs > this.multiChannelCrashWindowMs) {
+        this.correlatedPageCrashes.delete(crashedChannel);
+      }
+    }
+
+    const normalizedChannel = normalizeChannel(channel);
+    this.correlatedPageCrashes.set(normalizedChannel, nowMs);
+    const affectedChannels = [...this.correlatedPageCrashes.keys()];
+    if (affectedChannels.length < this.multiChannelCrashThreshold) {
+      return;
+    }
+
+    this.pageCrashRecycleGeneration = browserGeneration;
+    const reason = 'multi_channel_page_crash';
     this.logger.warn('browser_crash_loop_recycle_requested', {
       reason,
       channel,
-      channelCrashCount: channelTimes.length,
-      globalPageCrashCount: this.globalPageCrashTimestamps.length,
+      affectedChannels,
+      distinctChannelCount: affectedChannels.length,
+      browserGeneration,
+      pageGeneration,
     });
 
     // Count crash-driven full recycle toward browser failure breaker.
@@ -1110,9 +1123,6 @@ export class DefaultBrowserManager implements BrowserManager {
     outcomes: readonly BrowserNavigationOutcome[],
     reportedRecoveryEpoch: number,
   ): Promise<void> {
-    let decision: NavigationTimeoutRecoveryDecision | undefined;
-    let escalateToContainer = false;
-
     await this.runExclusive(async () => {
       if (
         !this.desiredRunning ||
@@ -1123,110 +1133,18 @@ export class DefaultBrowserManager implements BrowserManager {
         return;
       }
 
-      decision = this.recordNavigationOutcomes(outcomes);
-      if (decision === undefined) {
-        return;
-      }
-
-      this.clearNavigationTimeouts();
-      escalateToContainer = this.recordBrowserFailure();
-    });
-
-    if (decision === undefined) {
-      return;
-    }
-
-    this.logger.warn('browser_navigation_failure_recycle_requested', {
-      ...decision,
-    });
-
-    if (escalateToContainer) {
-      this.requestFatalRecovery('browser_navigation_failure_loop', {
-        ...decision,
-      });
-      return;
-    }
-
-    try {
-      await this.restart();
-    } catch (error: unknown) {
-      this.logger.error('browser_navigation_failure_recycle_failed', {
-        reason: decision.reason,
-        error: this.safeError(error),
-      });
-      this.requestFatalRecovery('browser_navigation_failure_recycle_failed', {
-        reason: decision.reason,
-        channel: decision.channel,
-      });
-    }
-  }
-
-  private recordNavigationOutcomes(
-    outcomes: readonly BrowserNavigationOutcome[],
-  ): NavigationTimeoutRecoveryDecision | undefined {
-    const nowMs = this.now();
-    this.globalNavigationTimeouts = this.globalNavigationTimeouts.filter(
-      (entry) =>
-        nowMs - entry.timestampMs <=
-        DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_WINDOW_MS,
-    );
-
-    for (const outcome of outcomes) {
-      if (outcome.status === 'succeeded') {
-        this.channelNavigationTimeoutTimestamps.delete(outcome.channel);
-        this.globalNavigationTimeouts =
-          this.globalNavigationTimeouts.filter(
-            (entry) => entry.channel !== outcome.channel,
-          );
-        continue;
-      }
-
-      const channelTimes = evictOldTimestamps(
-        this.channelNavigationTimeoutTimestamps.get(outcome.channel) ?? [],
-        nowMs,
-        DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_WINDOW_MS,
-      );
-      channelTimes.push(nowMs);
-      this.channelNavigationTimeoutTimestamps.set(
-        outcome.channel,
-        channelTimes,
-      );
-      this.globalNavigationTimeouts.push({
-        channel: outcome.channel,
-        timestampMs: nowMs,
-      });
-
-      const channelNeedsRecycle =
-        channelTimes.length >=
-        DEFAULT_CHANNEL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD;
-      const globalNeedsRecycle =
-        this.globalNavigationTimeouts.length >=
-        DEFAULT_GLOBAL_NAVIGATION_TIMEOUT_RECYCLE_THRESHOLD;
-
-      this.logger.debug('browser_navigation_failure_recorded', {
-        channel: outcome.channel,
-        channelTimeoutCount: channelTimes.length,
-        globalTimeoutCount: this.globalNavigationTimeouts.length,
-      });
-
-      if (channelNeedsRecycle || globalNeedsRecycle) {
-        return {
-          reason: channelNeedsRecycle
-            ? 'channel_navigation_timeout_loop'
-            : 'global_navigation_timeout_loop',
+      for (const outcome of outcomes) {
+        if (outcome.status !== 'timed_out') {
+          continue;
+        }
+        this.logger.debug('browser_navigation_failure_recorded', {
           channel: outcome.channel,
-          channelTimeoutCount: channelTimes.length,
-          globalTimeoutCount: this.globalNavigationTimeouts.length,
-        };
+          status: outcome.status,
+          recovery: 'per_channel',
+          browserGeneration: this.browserGeneration,
+        });
       }
-    }
-
-    return undefined;
-  }
-
-  private clearNavigationTimeouts(): void {
-    this.channelNavigationTimeoutTimestamps.clear();
-    this.globalNavigationTimeouts = [];
+    });
   }
 
   /**
@@ -1357,4 +1275,8 @@ function evictOldTimestamps(
 ): number[] {
   const cutoff = nowMs - windowMs;
   return timestamps.filter((timestamp) => timestamp >= cutoff);
+}
+
+function normalizeChannel(channel: string): string {
+  return channel.trim().toLocaleLowerCase('en-US');
 }

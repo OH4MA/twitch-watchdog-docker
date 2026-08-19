@@ -15,6 +15,8 @@ twitch_api:
   access_token: ""
 
 browser:
+  # Browser engine; Firefox remains the default / 瀏覽器引擎；預設仍為 Firefox
+  engine: firefox
   navigation_timeout_ms: 30000
   page_health_check_interval_seconds: 60
   reward_check_interval_seconds: 30
@@ -32,6 +34,21 @@ browser:
   # Block the Twitch chat WebSocket to cut DOM/CPU load on busy channels.
   disable_chat: true
   resource_telemetry_interval_seconds: 60
+  # Per-channel recovery / 單頻道復原政策
+  recovery:
+    page_crash_backoff_seconds: [30, 60, 120]
+    channel_crash_window_seconds: 600
+    channel_quarantine_threshold: 4
+    channel_quarantine_seconds: 900
+    stable_reset_seconds: 1800
+    multi_channel_crash_window_seconds: 15
+    multi_channel_crash_threshold: 2
+    browser_failure_window_seconds: 600
+    browser_failure_container_threshold: 3
+  # Session startup cooldown / Session 啟動冷卻
+  session_start:
+    failure_backoff_seconds: [30, 60, 120]
+    maximum_cooldown_seconds: 900
   # Memory thresholds are binary MiB anchors for baseline_streams (default 3).
   # When scale_with_streams is true, effective = base + (anchor - base) * (N / baseline).
   # Docker mem_limit defaults to 6g for about 3 concurrent streams; raise it for larger N.

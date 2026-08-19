@@ -28,6 +28,10 @@ import {
   DefaultSessionManager,
   type SessionManager,
 } from '../../src/sessions/index.js';
+import {
+  createDefaultBrowserRecovery,
+  createDefaultBrowserSessionStart,
+} from '../helpers/test-config.js';
 
 const CONFIG_PATH = '/test/config.yml';
 const STORAGE_STATE_PATH = '/private/storage-state.json';
@@ -46,6 +50,7 @@ const CONFIG: AppConfig = Object.freeze({
     clientSecret: '',
   }),
   browser: Object.freeze({
+    engine: 'firefox',
     navigationTimeoutMs: 30_000,
     pageHealthCheckIntervalSeconds: 60,
     rewardCheckIntervalSeconds: 30,
@@ -61,6 +66,8 @@ const CONFIG: AppConfig = Object.freeze({
     blockKnownTracking: false,
     disableChat: true,
     resourceTelemetryIntervalSeconds: 300,
+    recovery: Object.freeze(createDefaultBrowserRecovery()),
+    sessionStart: Object.freeze(createDefaultBrowserSessionStart()),
     resourceGuard: Object.freeze({
       enabled: false,
       sampleIntervalSeconds: 2,
@@ -117,6 +124,7 @@ interface HarnessOptions {
   readonly configError?: Error;
   readonly credentialError?: Error;
   readonly browserStartError?: Error;
+  readonly startupDiagnostics?: ApplicationRuntime['startupDiagnostics'];
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -157,6 +165,9 @@ function createHarness(options: HarnessOptions = {}) {
     browserManager,
     sessionManager,
     scheduler,
+    ...(options.startupDiagnostics === undefined
+      ? {}
+      : { startupDiagnostics: options.startupDiagnostics }),
   };
   const loggerFactory = vi.fn(() => {
     lifecycleEvents.push('logger.create');
@@ -215,6 +226,83 @@ describe('DefaultAppRunner', () => {
       LOG_EVENTS.CREDENTIAL_CHECKED,
       LOG_EVENTS.SERVICE_STARTED,
     ]);
+    expect(harness.logger.info).toHaveBeenCalledWith(
+      LOG_EVENTS.SERVICE_STARTED,
+      expect.objectContaining({
+        channelCount: 2,
+        runId: expect.stringMatching(/^[A-Za-z0-9-]{8,64}$/u),
+        applicationVersion: '0.1.0',
+        gitCommit: null,
+        nodeVersion: process.version,
+        playwrightVersion: '1.62.1',
+        browserEngine: 'firefox',
+        browserVersion: 'test-browser-1.0',
+        browserGeneration: 1,
+        memoryMaxBytes: null,
+        pidsMax: null,
+        safeConfigFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      }),
+    );
+    expect(JSON.stringify(harness.logger.info.mock.calls)).not.toContain(
+      ACCESS_TOKEN,
+    );
+    expect(JSON.stringify(harness.logger.info.mock.calls)).not.toContain(
+      STORAGE_STATE_PATH,
+    );
+  });
+
+  it('runtime 提供 startupDiagnostics 時以 provider 結果發出 service_started', async () => {
+    const harness = createHarness({
+      startupDiagnostics: async () => ({
+        runId: 'provider-run-1234',
+        applicationVersion: '9.9.9',
+        gitCommit: 'abcdef0',
+        nodeVersion: 'v99.0.0',
+        playwrightVersion: '1.62.1',
+        browserEngine: 'firefox',
+        browserVersion: 'provider-browser',
+        browserGeneration: 42,
+        memoryMaxBytes: 6_442_450_944,
+        pidsMax: 512,
+        safeConfigFingerprint: 'f'.repeat(64),
+      }),
+    });
+
+    await harness.app.start();
+
+    expect(harness.logger.info).toHaveBeenCalledWith(
+      LOG_EVENTS.SERVICE_STARTED,
+      expect.objectContaining({
+        runId: 'provider-run-1234',
+        memoryMaxBytes: 6_442_450_944,
+        pidsMax: 512,
+        browserGeneration: 42,
+      }),
+    );
+  });
+
+  it('startupDiagnostics 拋錯時改用預設 diagnostics 並記錄警告', async () => {
+    const harness = createHarness({
+      startupDiagnostics: async () => {
+        throw new Error('diagnostics exploded');
+      },
+    });
+
+    await harness.app.start();
+
+    expect(harness.logger.info).toHaveBeenCalledWith(
+      LOG_EVENTS.SERVICE_STARTED,
+      expect.objectContaining({
+        runId: expect.stringMatching(/^[A-Za-z0-9-]{8,64}$/u),
+        playwrightVersion: '1.62.1',
+        memoryMaxBytes: null,
+        pidsMax: null,
+      }),
+    );
+    expect(harness.logger.warn).toHaveBeenCalledWith(
+      'runtime_diagnostics_failed',
+      { error: 'diagnostics exploded' },
+    );
   });
 
   it('設定失敗時不建立 logger、驗證 credential 或 runtime', async () => {
@@ -470,6 +558,8 @@ function createBrowserManager(
     closePage: vi.fn(async () => undefined),
     restart: vi.fn(async () => undefined),
     getPageCount: vi.fn(() => 0),
+    getBrowserGeneration: vi.fn(() => 1),
+    getBrowserVersion: vi.fn(() => 'test-browser-1.0'),
   };
 }
 

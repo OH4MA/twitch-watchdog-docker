@@ -13,7 +13,11 @@ import {
   type StreamSelector,
 } from '../../src/scheduler/StreamSelector.js';
 import { DefaultWatchdogScheduler } from '../../src/scheduler/WatchdogScheduler.js';
-import { DefaultSessionManager } from '../../src/sessions/index.js';
+import {
+  ChannelRecoveryPolicy,
+  DefaultReconcileCoordinator,
+  DefaultSessionManager,
+} from '../../src/sessions/index.js';
 import type { LiveStatusProvider } from '../../src/twitch/index.js';
 import { RecordingChannelSessionFactory } from '../helpers/recording-session-factory.js';
 import { createTestConfig } from '../helpers/test-config.js';
@@ -23,22 +27,32 @@ import {
 } from '../helpers/test-logger.js';
 
 describe('Browser invalidation 到 scheduler 重建整合', () => {
-  it('page crash 經 callback invalidate session，下一輪 reconcile 重建', async () => {
+  it('單一頻道 page crash 只延後該頻道，不影響其他 session 或重啟 browser', async () => {
     const channel = 'recoverable_channel';
+    const healthyChannels = ['healthy_b', 'healthy_c'];
     const config = createTestConfig({
-      channels: [channel],
-      maxConcurrentStreams: 1,
+      channels: [channel, ...healthyChannels],
+      maxConcurrentStreams: 3,
       browser: { restartOnCrash: false },
     });
+    let nowMs = 0;
     const clock = createFixedClock();
     const recordingLogger = createRecordingLogger(clock);
     const firstPage = new TestPageAdapter();
+    const secondPage = new TestPageAdapter();
+    const thirdPage = new TestPageAdapter();
     const replacementPage = new TestPageAdapter();
-    const context = new TestContextAdapter([firstPage, replacementPage]);
+    const context = new TestContextAdapter([
+      firstPage,
+      secondPage,
+      thirdPage,
+      replacementPage,
+    ]);
     const browser = new TestBrowserAdapter(context);
+    const launcher = new TestBrowserLauncher(browser);
     const wiring: { sessionManager?: DefaultSessionManager } = {};
     const browserManager = new DefaultBrowserManager(config, {
-      launcher: new TestBrowserLauncher(browser),
+      launcher,
       logger: recordingLogger.logger,
       onInvalidated: async ({ channel: invalidatedChannel, reason }) => {
         const manager = wiring.sessionManager;
@@ -58,8 +72,18 @@ describe('Browser invalidation 到 scheduler 重建整合', () => {
     });
     const sessionManager = new DefaultSessionManager(sessionFactory, {
       logger: recordingLogger.logger,
+      recoveryPolicy: new ChannelRecoveryPolicy({
+        recovery: config.browser.recovery,
+        sessionStart: config.browser.sessionStart,
+        now: () => nowMs,
+      }),
+      configuredChannels: config.channels,
     });
     wiring.sessionManager = sessionManager;
+    const reconcileCoordinator = new DefaultReconcileCoordinator({
+      sessionManager,
+      logger: recordingLogger.logger,
+    });
     const liveStatusProvider: LiveStatusProvider = {
       async getLiveStatuses(channels) {
         return channels.map((configuredChannel) => ({
@@ -74,22 +98,23 @@ describe('Browser invalidation 到 scheduler 重建整合', () => {
       config,
       liveStatusProvider,
       streamSelector,
-      sessionManager,
+      reconcileCoordinator,
       logger: recordingLogger.logger,
       now: clock.date,
     });
 
     await browserManager.start();
     await scheduler.runOnce();
+    await reconcileCoordinator.waitForIdle();
 
-    expect(sessionManager.getActiveChannels()).toEqual([channel]);
-    expect(context.newPageCalls).toBe(1);
+    expect(sessionManager.getActiveChannels()).toEqual(config.channels);
+    expect(context.newPageCalls).toBe(3);
     expect(sessionFactory.sessionsFor(channel)).toHaveLength(1);
 
     firstPage.emitCrash();
 
     await vi.waitFor(() => {
-      expect(sessionManager.getActiveChannels()).toEqual([]);
+      expect(sessionManager.getActiveChannels()).toEqual(healthyChannels);
     });
     expect(firstPage.closeCalls).toBe(1);
     expect(sessionFactory.events).toContainEqual({
@@ -100,9 +125,20 @@ describe('Browser invalidation 到 scheduler 重建整合', () => {
     });
 
     await scheduler.runOnce();
+    await reconcileCoordinator.waitForIdle();
 
-    expect(sessionManager.getActiveChannels()).toEqual([channel]);
-    expect(context.newPageCalls).toBe(2);
+    expect(sessionManager.getActiveChannels()).toEqual(healthyChannels);
+    expect(context.newPageCalls).toBe(3);
+    expect(sessionFactory.sessionsFor(channel)).toHaveLength(1);
+    expect(browser.closeCalls).toBe(0);
+    expect(launcher.launchCalls).toBe(1);
+
+    nowMs = 30_000;
+    await scheduler.runOnce();
+    await reconcileCoordinator.waitForIdle();
+
+    expect(sessionManager.getActiveChannels()).toEqual(config.channels);
+    expect(context.newPageCalls).toBe(4);
     expect(sessionFactory.sessionsFor(channel)).toHaveLength(2);
     expect(sessionFactory.events).toContainEqual({
       type: 'started',
@@ -110,6 +146,7 @@ describe('Browser invalidation 到 scheduler 重建整合', () => {
       generation: 2,
     });
 
+    await reconcileCoordinator.stop('test_cleanup');
     await sessionManager.stopAll('test_cleanup');
     await browserManager.stop();
   });
@@ -204,6 +241,10 @@ class TestBrowserAdapter implements BrowserAdapter {
     return this.connected;
   }
 
+  public getVersion(): string {
+    return 'integration-browser-1.0';
+  }
+
   public onDisconnected(listener: () => void): () => void {
     this.disconnectListeners.add(listener);
     return () => {
@@ -213,9 +254,12 @@ class TestBrowserAdapter implements BrowserAdapter {
 }
 
 class TestBrowserLauncher implements BrowserLauncher {
+  public launchCalls = 0;
+
   public constructor(private readonly browser: BrowserAdapter) {}
 
   public async launch(): Promise<BrowserAdapter> {
+    this.launchCalls += 1;
     return this.browser;
   }
 }

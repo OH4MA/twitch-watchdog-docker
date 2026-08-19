@@ -10,6 +10,12 @@ import {
 import type { BrowserManager } from '../browser/BrowserManager.js';
 import type { WatchdogScheduler } from '../scheduler/WatchdogScheduler.js';
 import type { SessionManager } from '../sessions/index.js';
+import type { ReconcileCoordinator } from '../sessions/index.js';
+import {
+  createRuntimeStartupDiagnostics,
+  type RuntimeStartupDiagnostics,
+  type StartupDiagnosticsProvider,
+} from './RuntimeDiagnostics.js';
 
 export interface AppRunner {
   start(): Promise<void>;
@@ -24,8 +30,10 @@ export interface ApplicationIntegration {
 export interface ApplicationRuntime {
   readonly browserManager: BrowserManager;
   readonly sessionManager: SessionManager;
+  readonly reconcileCoordinator?: ReconcileCoordinator;
   readonly scheduler: WatchdogScheduler;
   readonly integrations?: readonly ApplicationIntegration[];
+  readonly startupDiagnostics?: StartupDiagnosticsProvider;
 }
 
 export type RuntimeFactory = (
@@ -112,12 +120,9 @@ export class DefaultAppRunner implements AppRunner {
       const credentialResult =
         await this.options.credentialValidator.validate(config);
       if (!credentialResult.hasCookies) {
-        safeLog(logger, 'warn', 'credential_storage_state_empty_cookies', {
-          storageStatePath: credentialResult.storageStatePath,
-        });
+        safeLog(logger, 'warn', 'credential_storage_state_empty_cookies', {});
       }
       safeLog(logger, 'info', LOG_EVENTS.CREDENTIAL_CHECKED, {
-        storageStatePath: credentialResult.storageStatePath,
         hasCookies: credentialResult.hasCookies,
         twitchApiConfigured: credentialResult.twitchApiConfigured,
       });
@@ -137,8 +142,14 @@ export class DefaultAppRunner implements AppRunner {
       phase = 'scheduler';
       await runtime.scheduler.start();
 
+      const startupDiagnostics = await this.resolveStartupDiagnostics(
+        config,
+        runtime,
+        logger,
+      );
       safeLog(logger, 'info', LOG_EVENTS.SERVICE_STARTED, {
         channelCount: config.channels.length,
+        ...startupDiagnostics,
       });
     } catch (error: unknown) {
       const logger = this.currentLogger();
@@ -182,6 +193,15 @@ export class DefaultAppRunner implements AppRunner {
         () => runtime.scheduler.stop(),
         this.config,
       );
+      const reconcileCoordinator = runtime.reconcileCoordinator;
+      if (reconcileCoordinator !== undefined) {
+        await cleanupStep(
+          logger,
+          'reconcile_coordinator',
+          () => reconcileCoordinator.stop(reason),
+          this.config,
+        );
+      }
       await cleanupStep(
         logger,
         'session_manager',
@@ -217,6 +237,32 @@ export class DefaultAppRunner implements AppRunner {
 
   private currentLogger(): Logger {
     return this.logger ?? this.options.bootstrapLogger;
+  }
+
+  private async resolveStartupDiagnostics(
+    config: AppConfig,
+    runtime: ApplicationRuntime,
+    logger: Logger,
+  ): Promise<RuntimeStartupDiagnostics> {
+    const fallback = createRuntimeStartupDiagnostics({
+      config,
+      browserManager: runtime.browserManager,
+      env: this.options.env,
+      browserEngine: config.browser.engine,
+    });
+    const provider = runtime.startupDiagnostics;
+    if (provider === undefined) {
+      return fallback;
+    }
+
+    try {
+      return await provider();
+    } catch (error: unknown) {
+      safeLog(logger, 'warn', 'runtime_diagnostics_failed', {
+        error: safeErrorMessage(error, config),
+      });
+      return fallback;
+    }
   }
 }
 

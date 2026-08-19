@@ -1,10 +1,14 @@
 import { readFile } from 'node:fs/promises';
 
 import {
+  BROWSER_ENGINES,
   LOG_LEVELS,
   STREAM_QUALITIES,
   type AppConfig,
   type BrowserConfig,
+  type BrowserEngine,
+  type BrowserRecoveryConfig,
+  type BrowserSessionStartConfig,
   type DiscordConfig,
   type LogLevel,
   type ResourceGuardConfig,
@@ -26,6 +30,7 @@ const DEFAULT_MAX_CONCURRENT_STREAMS = 3;
 const DEFAULT_STORAGE_STATE_PATH =
   '/data/browser-state/storage-state.json';
 const DEFAULT_NAVIGATION_TIMEOUT_MS = 30_000;
+const DEFAULT_BROWSER_ENGINE: BrowserEngine = 'firefox';
 const DEFAULT_PAGE_HEALTH_CHECK_INTERVAL_SECONDS = 60;
 const DEFAULT_REWARD_CHECK_INTERVAL_SECONDS = 30;
 /** Disabled by default to reduce Firefox lifecycle churn and memory pressure. */
@@ -36,6 +41,17 @@ const DEFAULT_VIEWPORT_WIDTH = 1280;
 const DEFAULT_VIEWPORT_HEIGHT = 720;
 /** Normal resource snapshot cadence; policy samples use resource_guard.sample_interval_seconds. */
 const DEFAULT_RESOURCE_TELEMETRY_INTERVAL_SECONDS = 60;
+const DEFAULT_PAGE_CRASH_BACKOFF_SECONDS = [30, 60, 120] as const;
+const DEFAULT_CHANNEL_CRASH_WINDOW_SECONDS = 600;
+const DEFAULT_CHANNEL_QUARANTINE_THRESHOLD = 4;
+const DEFAULT_CHANNEL_QUARANTINE_SECONDS = 900;
+const DEFAULT_STABLE_RESET_SECONDS = 1_800;
+const DEFAULT_MULTI_CHANNEL_CRASH_WINDOW_SECONDS = 15;
+const DEFAULT_MULTI_CHANNEL_CRASH_THRESHOLD = 2;
+const DEFAULT_BROWSER_FAILURE_WINDOW_SECONDS = 600;
+const DEFAULT_BROWSER_FAILURE_CONTAINER_THRESHOLD = 3;
+const DEFAULT_SESSION_START_FAILURE_BACKOFF_SECONDS = [30, 60, 120] as const;
+const DEFAULT_SESSION_START_MAXIMUM_COOLDOWN_SECONDS = 900;
 const DEFAULT_RESOURCE_GUARD_SAMPLE_INTERVAL_SECONDS = 2;
 const DEFAULT_RESOURCE_GUARD_STARTUP_RATE_GRACE_SECONDS = 120;
 const DEFAULT_RESOURCE_GUARD_BASELINE_STREAMS = 3;
@@ -448,6 +464,7 @@ function buildBrowserConfig(
   const browser = value === undefined ? {} : requireRecord(value, 'browser');
 
   return {
+    engine: optionalBrowserEngine(browser.engine),
     navigationTimeoutMs: optionalPositiveInteger(
       browser.navigation_timeout_ms,
       'browser.navigation_timeout_ms',
@@ -530,9 +547,99 @@ function buildBrowserConfig(
       DEFAULT_RESOURCE_TELEMETRY_INTERVAL_SECONDS,
       MAX_TIMER_DELAY_SECONDS,
     ),
+    recovery: buildBrowserRecoveryConfig(browser.recovery),
+    sessionStart: buildBrowserSessionStartConfig(browser.session_start),
     resourceGuard: buildResourceGuardConfig(
       browser.resource_guard,
       maxConcurrentStreams,
+    ),
+  };
+}
+
+function buildBrowserRecoveryConfig(value: unknown): BrowserRecoveryConfig {
+  const recovery =
+    value === undefined
+      ? {}
+      : requireRecord(value, 'browser.recovery');
+
+  return {
+    pageCrashBackoffSeconds: optionalPositiveIntegerArray(
+      recovery.page_crash_backoff_seconds,
+      'browser.recovery.page_crash_backoff_seconds',
+      DEFAULT_PAGE_CRASH_BACKOFF_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    channelCrashWindowSeconds: optionalPositiveInteger(
+      recovery.channel_crash_window_seconds,
+      'browser.recovery.channel_crash_window_seconds',
+      DEFAULT_CHANNEL_CRASH_WINDOW_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    channelQuarantineThreshold: optionalIntegerAtLeast(
+      recovery.channel_quarantine_threshold,
+      'browser.recovery.channel_quarantine_threshold',
+      DEFAULT_CHANNEL_QUARANTINE_THRESHOLD,
+      2,
+    ),
+    channelQuarantineSeconds: optionalIntegerAtLeast(
+      recovery.channel_quarantine_seconds,
+      'browser.recovery.channel_quarantine_seconds',
+      DEFAULT_CHANNEL_QUARANTINE_SECONDS,
+      600,
+      1_800,
+    ),
+    stableResetSeconds: optionalPositiveInteger(
+      recovery.stable_reset_seconds,
+      'browser.recovery.stable_reset_seconds',
+      DEFAULT_STABLE_RESET_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    multiChannelCrashWindowSeconds: optionalPositiveInteger(
+      recovery.multi_channel_crash_window_seconds,
+      'browser.recovery.multi_channel_crash_window_seconds',
+      DEFAULT_MULTI_CHANNEL_CRASH_WINDOW_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    multiChannelCrashThreshold: optionalIntegerAtLeast(
+      recovery.multi_channel_crash_threshold,
+      'browser.recovery.multi_channel_crash_threshold',
+      DEFAULT_MULTI_CHANNEL_CRASH_THRESHOLD,
+      2,
+    ),
+    browserFailureWindowSeconds: optionalPositiveInteger(
+      recovery.browser_failure_window_seconds,
+      'browser.recovery.browser_failure_window_seconds',
+      DEFAULT_BROWSER_FAILURE_WINDOW_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    browserFailureContainerThreshold: optionalPositiveInteger(
+      recovery.browser_failure_container_threshold,
+      'browser.recovery.browser_failure_container_threshold',
+      DEFAULT_BROWSER_FAILURE_CONTAINER_THRESHOLD,
+    ),
+  };
+}
+
+function buildBrowserSessionStartConfig(
+  value: unknown,
+): BrowserSessionStartConfig {
+  const sessionStart =
+    value === undefined
+      ? {}
+      : requireRecord(value, 'browser.session_start');
+
+  return {
+    failureBackoffSeconds: optionalPositiveIntegerArray(
+      sessionStart.failure_backoff_seconds,
+      'browser.session_start.failure_backoff_seconds',
+      DEFAULT_SESSION_START_FAILURE_BACKOFF_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
+    ),
+    maximumCooldownSeconds: optionalPositiveInteger(
+      sessionStart.maximum_cooldown_seconds,
+      'browser.session_start.maximum_cooldown_seconds',
+      DEFAULT_SESSION_START_MAXIMUM_COOLDOWN_SECONDS,
+      MAX_TIMER_DELAY_SECONDS,
     ),
   };
 }
@@ -752,6 +859,22 @@ function optionalStreamQuality(value: unknown): StreamQuality {
   return value as StreamQuality;
 }
 
+function optionalBrowserEngine(value: unknown): BrowserEngine {
+  if (value === undefined) {
+    return DEFAULT_BROWSER_ENGINE;
+  }
+  if (
+    typeof value !== 'string' ||
+    !BROWSER_ENGINES.includes(value as BrowserEngine)
+  ) {
+    throw new ConfigValidationError(
+      'browser.engine',
+      `必須是 ${BROWSER_ENGINES.join('、')} 其中之一`,
+    );
+  }
+  return value as BrowserEngine;
+}
+
 function requireChannels(value: unknown): readonly string[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw new ConfigValidationError('channels', '必須是非空陣列');
@@ -795,6 +918,28 @@ function optionalPositiveInteger(
   maximum?: number,
 ): number {
   return optionalIntegerAtLeast(value, field, fallback, 1, maximum);
+}
+
+function optionalPositiveIntegerArray(
+  value: unknown,
+  field: string,
+  fallback: readonly number[],
+  maximum: number,
+): readonly number[] {
+  if (value === undefined) {
+    return [...fallback];
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ConfigValidationError(field, '必須是非空的正整數陣列');
+  }
+  return value.map((item, index) =>
+    optionalPositiveInteger(
+      item,
+      `${field}[${index}]`,
+      1,
+      maximum,
+    ),
+  );
 }
 
 function requireInteger(value: unknown, field: string): number {
@@ -936,6 +1081,9 @@ export { DEFAULT_CONFIG_PATH };
 export type {
   AppConfig,
   BrowserConfig,
+  BrowserEngine,
+  BrowserRecoveryConfig,
+  BrowserSessionStartConfig,
   DiscordConfig,
   LogLevel,
   ResourceGuardConfig,

@@ -7,6 +7,10 @@ import type {
   TelegramConfig,
   TwitchApiConfig,
 } from '../../src/config/index.js';
+import type {
+  BrowserRecoveryConfig,
+  BrowserSessionStartConfig,
+} from '../../src/config/AppConfig.js';
 import { computeEffectiveResourceGuardThresholds } from '../../src/config/resourceGuardThresholds.js';
 
 export interface TestConfigOverrides {
@@ -20,6 +24,27 @@ export interface TestConfigOverrides {
   readonly browser?: Partial<BrowserConfig>;
   readonly telegram?: Partial<TelegramConfig>;
   readonly discord?: Partial<DiscordConfig>;
+}
+
+export function createDefaultBrowserRecovery(): BrowserRecoveryConfig {
+  return {
+    pageCrashBackoffSeconds: [30, 60, 120],
+    channelCrashWindowSeconds: 600,
+    channelQuarantineThreshold: 4,
+    channelQuarantineSeconds: 900,
+    stableResetSeconds: 1_800,
+    multiChannelCrashWindowSeconds: 15,
+    multiChannelCrashThreshold: 2,
+    browserFailureWindowSeconds: 600,
+    browserFailureContainerThreshold: 3,
+  };
+}
+
+export function createDefaultBrowserSessionStart(): BrowserSessionStartConfig {
+  return {
+    failureBackoffSeconds: [30, 60, 120],
+    maximumCooldownSeconds: 900,
+  };
 }
 
 export function createDefaultResourceGuard(
@@ -85,6 +110,7 @@ export function createTestConfig(
       ...overrides.twitchApi,
     },
     browser: {
+      engine: 'firefox',
       navigationTimeoutMs: 30_000,
       pageHealthCheckIntervalSeconds: 60,
       rewardCheckIntervalSeconds: 30,
@@ -100,6 +126,8 @@ export function createTestConfig(
       blockKnownTracking: false,
       disableChat: true,
       resourceTelemetryIntervalSeconds: 300,
+      recovery: createDefaultBrowserRecovery(),
+      sessionStart: createDefaultBrowserSessionStart(),
       resourceGuard: createDefaultResourceGuard(maxConcurrentStreams),
       ...overrides.browser,
       resourceGuard:

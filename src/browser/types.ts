@@ -16,6 +16,7 @@ export type BrowserManagerConfig = Pick<
     | 'blockFonts'
     | 'blockKnownTracking'
     | 'disableChat'
+    | 'recovery'
   >;
 };
 
@@ -59,6 +60,8 @@ export interface BrowserAdapter {
   onDisconnected(listener: () => void): () => void;
   /** Whether the Playwright connection to the browser process is still alive. */
   isConnected(): boolean;
+  /** Safe browser build/version string reported by Playwright. */
+  getVersion(): string;
 }
 
 /** Result of a timed resource close attempt. Timeout is never success. */
@@ -86,6 +89,8 @@ export interface BrowserManager {
   closePage(channel: string): Promise<void>;
   restart(): Promise<void>;
   getPageCount(): number;
+  getBrowserGeneration(): number;
+  getBrowserVersion(): string | null;
 }
 
 export type BrowserNavigationOutcome =
@@ -147,19 +152,12 @@ export interface BrowserManagerDependencies {
   readonly restartBackoffMaxMs?: number;
   readonly maxAutomaticRestartAttempts?: number;
   readonly restartAttemptResetMs?: number;
-  /** Channel page crashes in this window that trigger a browser recycle. */
-  readonly channelCrashRecycleThreshold?: number;
-  readonly channelCrashWindowMs?: number;
-  /** Global page crashes in this window that trigger a browser recycle. */
-  readonly globalPageCrashRecycleThreshold?: number;
-  readonly globalPageCrashWindowMs?: number;
-  /** Unexpected browser failures/recycles that escalate to container restart. */
-  readonly browserFailureContainerThreshold?: number;
-  readonly browserFailureWindowMs?: number;
 }
 
 export interface PageEntry {
   readonly adapter: BrowserPageAdapter;
+  readonly browserGeneration: number;
+  readonly pageGeneration: number;
   unsubscribeCrash: () => void;
   unsubscribeClose: () => void;
   unsubscribePopup: () => void;

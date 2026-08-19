@@ -228,6 +228,7 @@ export class DefaultChannelSession implements ChannelSession {
   private lifecycleTail: Promise<void> = Promise.resolve();
   private pageOperationTail: Promise<void> = Promise.resolve();
   private startCancellationReason: string | undefined;
+  private operationAbortController: AbortController | undefined;
 
   public constructor(
     private readonly options: DefaultChannelSessionOptions,
@@ -286,6 +287,7 @@ export class DefaultChannelSession implements ChannelSession {
 
       this.currentState = 'starting';
       this.startCancellationReason = undefined;
+      this.operationAbortController = new AbortController();
       this.consecutiveHealthFailures = 0;
       this.resetRewardFailureRecovery();
 
@@ -296,7 +298,10 @@ export class DefaultChannelSession implements ChannelSession {
         page.setDefaultNavigationTimeout(
           this.options.config.browser.navigationTimeoutMs,
         );
-        await page.goto(this.targetUrl, { waitUntil: 'domcontentloaded' });
+        await page.goto(this.targetUrl, {
+          waitUntil: 'domcontentloaded',
+          signal: this.operationAbortController.signal,
+        });
         this.throwIfStartCancelled();
         if (!isExpectedChannelUrl(page.url(), this.targetUrl)) {
           throw new Error('頻道頁面導向非預期 Twitch URL');
@@ -319,10 +324,19 @@ export class DefaultChannelSession implements ChannelSession {
         this.clearTimers();
         this.page = undefined;
         await this.closePageForCleanup('start_failure');
-        safeLog(this.logger, 'error', 'watch_start_failed', {
-          channel: this.channel,
-          error: safeErrorMessage(error),
-        });
+        if (this.startCancellationReason !== undefined) {
+          safeLog(this.logger, 'debug', 'watch_start_aborted', {
+            channel: this.channel,
+            reason: this.startCancellationReason,
+            outcome: 'aborted',
+            error: safeErrorMessage(error),
+          });
+        } else {
+          safeLog(this.logger, 'error', 'watch_start_failed', {
+            channel: this.channel,
+            error: safeErrorMessage(error),
+          });
+        }
         throw error;
       }
     });
@@ -334,6 +348,7 @@ export class DefaultChannelSession implements ChannelSession {
     }
 
     this.startCancellationReason = reason;
+    this.abortSessionOperations(reason);
     this.clearTimers();
     this.page = undefined;
     await this.closePageForCleanup('start_cancelled');
@@ -349,6 +364,7 @@ export class DefaultChannelSession implements ChannelSession {
       }
 
       this.currentState = 'stopping';
+      this.abortSessionOperations(reason);
       this.clearTimers();
       const pageOperationsDrained = await this.drainPageOperations();
       if (!pageOperationsDrained) {
@@ -665,6 +681,7 @@ export class DefaultChannelSession implements ChannelSession {
 
   private async failSession(): Promise<void> {
     this.currentState = 'failed';
+    this.abortSessionOperations('health_failure_threshold');
     this.clearTimers();
 
     this.page = undefined;
@@ -1097,7 +1114,13 @@ export class DefaultChannelSession implements ChannelSession {
   }
 
   private async runPageReload(page: Page, reason: string): Promise<void> {
-    await page.reload({ waitUntil: 'domcontentloaded' });
+    const abortController = this.operationAbortController;
+    await page.reload({
+      waitUntil: 'domcontentloaded',
+      ...(abortController === undefined
+        ? {}
+        : { signal: abortController.signal }),
+    });
     await this.acceptContentWarningIfPresent(page, reason);
     await this.collapseSideNavIfExpanded(page, reason);
     await this.optimizePlayback(page);
@@ -1135,6 +1158,19 @@ export class DefaultChannelSession implements ChannelSession {
         `Session start cancelled: ${this.startCancellationReason}`,
       );
     }
+  }
+
+  private abortSessionOperations(reason: string): void {
+    const controller = this.operationAbortController;
+    if (controller === undefined || controller.signal.aborted) {
+      return;
+    }
+    controller.abort(reason);
+    safeLog(this.logger, 'debug', 'session_operation_aborted', {
+      channel: this.channel,
+      reason,
+      outcome: 'aborted',
+    });
   }
 
   private async drainPageOperations(): Promise<boolean> {
