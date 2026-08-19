@@ -27,14 +27,18 @@
 - Node.js 24 以上。
 - npm 11。
 - Docker Engine 與 Docker Compose plugin。
-- Playwright Firefox browser。
+- Playwright Firefox browser；進行 engine canary 時也需 Chromium。
+  Playwright Firefox is required by default; Chromium is also required for engine canaries.
 
 安裝依賴：
 
 ```bash
 npm ci
-npx playwright install firefox
+npx playwright install firefox chromium
 ```
+
+專案 Playwright 套件與 Docker image 必須同步使用 `1.62.1`。
+Keep the project Playwright packages and Docker image aligned on `1.62.1`.
 
 ## 常用命令
 

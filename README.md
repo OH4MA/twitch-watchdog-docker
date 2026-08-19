@@ -32,7 +32,8 @@ Accepting Twitch content warnings only clicks the visible confirmation for the l
 - Twitch Developer Console 建立的 App Client ID 與 Client Secret。
 - 若要在本機匯出登入狀態：Node.js 24 以上與 npm 11。
 
-正式容器使用 `mcr.microsoft.com/playwright:v1.60.0-noble`，搭配專案 Playwright `1.60.0`。
+正式容器使用 `mcr.microsoft.com/playwright:v1.62.1-noble`，搭配專案 Playwright `1.62.1`。
+The production image and project packages are kept aligned on Playwright `1.62.1`.
 
 ## 快速開始
 
@@ -63,6 +64,7 @@ twitch_api:
   client_secret: 你的ClientSecret
 
 browser:
+  engine: firefox
   stream_quality: 160p
   page_refresh_interval_seconds: 0
   resource_telemetry_interval_seconds: 60
@@ -80,6 +82,8 @@ discord:
 - `check_interval_seconds`：Twitch API 輪詢間隔，最小 30 秒。
 - `max_concurrent_streams`：最大同時觀看數。
 - `storage_state_path`：容器內 Playwright storageState 路徑。
+- `browser.engine`：支援 `firefox` 與 `chromium`，預設為 `firefox`。
+  Supports `firefox` and `chromium`; the default is `firefox`.
 - `browser.stream_quality`：預設 `160p`；設為 `auto` 可停用強制畫質。
 - `browser.page_refresh_interval_seconds`：預設 `0`（關閉定時重整以降低 Firefox 記憶體壓力）；設正值可啟用定時重整並依頻道錯開。此功能會保留，因 Twitch 可能在重整後提供可領取的忠誠點數按鈕；手動 `/refresh_now` 仍可用。
   Defaults to `0` (scheduled refresh off to reduce Firefox memory pressure). Positive values enable staggered scheduled refresh. This remains supported because Twitch may expose a claimable loyalty-points button after reload; manual `/refresh_now` also remains available.
