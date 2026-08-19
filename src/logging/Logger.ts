@@ -92,6 +92,8 @@ const BROAD_ASSIGNMENT_PATTERN =
   /(["']?\b(?:cookies?|authorization|storage[\s_-]?state)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n]+)/giu;
 const TOKEN_ASSIGNMENT_PATTERN =
   /(["']?\b(?:token|access[\s_-]?token|oauth(?:[\s_-]?token)?)\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/giu;
+const PRIVATE_IDENTIFIER_ASSIGNMENT_PATTERN =
+  /(["']?\b(?:chat|channel|user|guild)[\s_-]?id\b["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)/giu;
 
 export class JsonLineLogger implements Logger {
   private readonly minimumPriority: number;
@@ -149,7 +151,8 @@ export function redactSensitiveString(value: string): string {
   return value
     .replace(BEARER_TOKEN_PATTERN, `Bearer ${REDACTED_VALUE}`)
     .replace(BROAD_ASSIGNMENT_PATTERN, `$1${REDACTED_VALUE}`)
-    .replace(TOKEN_ASSIGNMENT_PATTERN, `$1${REDACTED_VALUE}`);
+    .replace(TOKEN_ASSIGNMENT_PATTERN, `$1${REDACTED_VALUE}`)
+    .replace(PRIVATE_IDENTIFIER_ASSIGNMENT_PATTERN, `$1${REDACTED_VALUE}`);
 }
 
 export function redactSensitiveData(value: unknown): JsonValue {
@@ -320,6 +323,7 @@ function isSensitiveKey(key: string): boolean {
     normalized.includes('token') ||
     normalized.includes('oauth') ||
     normalized.includes('authorization') ||
-    normalized.includes('storagestate')
+    normalized.includes('storagestate') ||
+    /(?:chat|channel|user|guild)ids?$/u.test(normalized)
   );
 }

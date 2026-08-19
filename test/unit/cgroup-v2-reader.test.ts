@@ -78,6 +78,7 @@ describe('CgroupV2Reader', () => {
       'memory.peak',
       'memory.swap.current',
       'pids.current',
+      'pids.max',
     ]);
   });
 
@@ -88,6 +89,7 @@ describe('CgroupV2Reader', () => {
     await writeFile(path.join(root, 'memory.peak'), '234567890\n');
     await writeFile(path.join(root, 'memory.swap.current'), '111\n');
     await writeFile(path.join(root, 'pids.current'), '42\n');
+    await writeFile(path.join(root, 'pids.max'), '512\n');
     await writeFile(
       path.join(root, 'cpu.stat'),
       'usage_usec 987654\nuser_usec 700000\nsystem_usec 287654\nnr_periods 12\n',
@@ -113,6 +115,7 @@ describe('CgroupV2Reader', () => {
       memoryPeakBytes: 234_567_890n,
       swapCurrentBytes: 111n,
       pidsCurrent: 42n,
+      pidsMax: 512n,
       cpu: {
         usageUsec: 987_654n,
         userUsec: 700_000n,

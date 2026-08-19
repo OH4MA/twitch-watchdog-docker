@@ -122,6 +122,10 @@ describe('TelegramApiClient', () => {
     expect(error).toBeInstanceOf(TelegramApiError);
     expect(String(error)).not.toContain(secret);
     expect(String(error)).not.toContain('api.telegram.org');
+    expect(error).toMatchObject({
+      errorCategory: 'network',
+      httpStatus: undefined,
+    });
   });
 
   it('API 拒絕時不轉送 Telegram description 內容', async () => {
@@ -142,6 +146,26 @@ describe('TelegramApiClient', () => {
 
     expect(String(error)).toContain('Telegram API rejected sendMessage');
     expect(String(error)).not.toContain('secret remote details');
+    expect(error).toMatchObject({
+      errorCategory: 'http',
+      httpStatus: 401,
+    });
+  });
+
+  it('無效 JSON 保留安全的 HTTP status 與錯誤分類', async () => {
+    const client = new TelegramApiClient({
+      botToken: 'safe-test-token',
+      fetch: vi.fn<typeof fetch>().mockResolvedValue(
+        new Response('not-json', { status: 502 }),
+      ),
+    });
+
+    const error = await captureError(client.sendMessage('1', 'hello'));
+
+    expect(error).toMatchObject({
+      errorCategory: 'invalid_response',
+      httpStatus: 502,
+    });
   });
 });
 

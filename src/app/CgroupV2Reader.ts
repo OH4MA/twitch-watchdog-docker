@@ -21,6 +21,7 @@ export interface CgroupSnapshot {
   readonly memoryPeakBytes?: bigint;
   readonly swapCurrentBytes?: bigint;
   readonly pidsCurrent?: bigint;
+  readonly pidsMax?: bigint;
   readonly events: CgroupMemoryEvents;
   readonly cpu?: CgroupCpuStat;
 }
@@ -109,6 +110,7 @@ export class CgroupV2Reader {
       memoryMaxBytes,
       memoryPeakBytes,
       pidsCurrent,
+      pidsMax,
       cpu,
     ] = await Promise.all([
       this.readRequiredCounter(
@@ -120,6 +122,7 @@ export class CgroupV2Reader {
       this.readOptionalCounter(path.join(rootPath, 'memory.max')),
       this.readOptionalCounter(path.join(rootPath, 'memory.peak')),
       this.readOptionalCounter(path.join(rootPath, 'pids.current')),
+      this.readOptionalCounter(path.join(rootPath, 'pids.max')),
       this.readCpuStat(path.join(rootPath, 'cpu.stat')),
     ]);
 
@@ -130,6 +133,7 @@ export class CgroupV2Reader {
       ...(memoryPeakBytes === undefined ? {} : { memoryPeakBytes }),
       ...(swapCurrentBytes === undefined ? {} : { swapCurrentBytes }),
       ...(pidsCurrent === undefined ? {} : { pidsCurrent }),
+      ...(pidsMax === undefined ? {} : { pidsMax }),
       events,
       ...(cpu === undefined ? {} : { cpu }),
     };

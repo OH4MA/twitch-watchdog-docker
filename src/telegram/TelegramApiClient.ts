@@ -61,14 +61,87 @@ interface TelegramResponse<T> {
 
 const SEND_TIMEOUT_MS = 10_000;
 
+export type TelegramErrorCategory =
+  | 'aborted'
+  | 'http'
+  | 'invalid_response'
+  | 'network'
+  | 'timeout'
+  | 'unknown';
+
+export interface TelegramErrorDescriptor {
+  readonly errorClass: string;
+  readonly httpStatus: number | null;
+  readonly errorCategory: TelegramErrorCategory;
+}
+
+export interface TelegramApiErrorOptions {
+  readonly errorCategory?: TelegramErrorCategory;
+  readonly httpStatus?: number;
+}
+
 export class TelegramApiError extends Error {
+  public readonly errorCategory: TelegramErrorCategory;
+  public readonly httpStatus: number | undefined;
+
   public constructor(
     public readonly method: string,
     message = 'Telegram API request failed',
+    options: TelegramApiErrorOptions = {},
   ) {
     super(message);
     this.name = 'TelegramApiError';
+    this.errorCategory = options.errorCategory ?? 'unknown';
+    this.httpStatus = options.httpStatus;
   }
+}
+
+export function describeTelegramError(
+  error: unknown,
+): TelegramErrorDescriptor {
+  if (error instanceof TelegramApiError) {
+    return {
+      errorClass: error.name,
+      httpStatus: error.httpStatus ?? null,
+      errorCategory: error.errorCategory,
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      errorClass: safeErrorClass(error),
+      httpStatus: null,
+      errorCategory:
+        error.name === 'TimeoutError'
+          ? 'timeout'
+          : error.name === 'AbortError'
+            ? 'aborted'
+            : 'unknown',
+    };
+  }
+
+  return {
+    errorClass: 'UnknownError',
+    httpStatus: null,
+    errorCategory: 'unknown',
+  };
+}
+
+function safeErrorClass(error: Error): string {
+  let className = 'Error';
+  try {
+    const prototype = Object.getPrototypeOf(error) as {
+      readonly constructor?: unknown;
+    } | null;
+    if (typeof prototype?.constructor === 'function') {
+      className = prototype.constructor.name;
+    }
+  } catch {
+    return 'Error';
+  }
+  return /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(className)
+    ? className
+    : 'Error';
 }
 
 export class TelegramApiClient implements TelegramApi {
@@ -155,18 +228,29 @@ export class TelegramApiClient implements TelegramApi {
           ...(signal === undefined ? {} : { signal }),
         },
       );
-    } catch (error: unknown) {
+    } catch {
       if (signal?.aborted === true) {
-        throw error;
+        throw createAbortError(method, signal);
       }
-      throw new TelegramApiError(method, 'Telegram network request failed');
+      throw new TelegramApiError(
+        method,
+        'Telegram network request failed',
+        { errorCategory: 'network' },
+      );
     }
 
     let payload: TelegramResponse<T>;
     try {
       payload = await response.json() as TelegramResponse<T>;
     } catch {
-      throw new TelegramApiError(method, 'Telegram returned invalid JSON');
+      throw new TelegramApiError(
+        method,
+        'Telegram returned invalid JSON',
+        {
+          errorCategory: 'invalid_response',
+          httpStatus: response.status,
+        },
+      );
     }
 
     if (!response.ok || payload.ok !== true || payload.result === undefined) {
@@ -175,6 +259,7 @@ export class TelegramApiClient implements TelegramApi {
         payload.description === undefined
           ? `Telegram API returned HTTP ${response.status}`
           : `Telegram API rejected ${method}`,
+        { errorCategory: 'http', httpStatus: response.status },
       );
     }
 
@@ -198,11 +283,15 @@ export class TelegramApiClient implements TelegramApi {
           signal,
         },
       );
-    } catch (error: unknown) {
+    } catch {
       if (signal.aborted) {
-        throw error;
+        throw createAbortError(method, signal);
       }
-      throw new TelegramApiError(method, 'Telegram network request failed');
+      throw new TelegramApiError(
+        method,
+        'Telegram network request failed',
+        { errorCategory: 'network' },
+      );
     }
 
     return parseTelegramResponse<T>(response, method);
@@ -217,7 +306,14 @@ async function parseTelegramResponse<T>(
   try {
     payload = await response.json() as TelegramResponse<T>;
   } catch {
-    throw new TelegramApiError(method, 'Telegram returned invalid JSON');
+    throw new TelegramApiError(
+      method,
+      'Telegram returned invalid JSON',
+      {
+        errorCategory: 'invalid_response',
+        httpStatus: response.status,
+      },
+    );
   }
 
   if (!response.ok || payload.ok !== true || payload.result === undefined) {
@@ -226,8 +322,22 @@ async function parseTelegramResponse<T>(
       payload.description === undefined
         ? `Telegram API returned HTTP ${response.status}`
         : `Telegram API rejected ${method}`,
+      { errorCategory: 'http', httpStatus: response.status },
     );
   }
 
   return payload.result;
+}
+
+function createAbortError(
+  method: string,
+  signal: AbortSignal,
+): TelegramApiError {
+  const timedOut =
+    signal.reason instanceof Error && signal.reason.name === 'TimeoutError';
+  return new TelegramApiError(
+    method,
+    timedOut ? 'Telegram request timed out' : 'Telegram request aborted',
+    { errorCategory: timedOut ? 'timeout' : 'aborted' },
+  );
 }

@@ -63,16 +63,19 @@ describe('ResourceGuardPolicy', () => {
 
   it('warning 只觸發一次，降到 reset 以下才解除', () => {
     const policy = createPolicy();
+    expect(policy.isWarningLatched()).toBe(false);
     expect(policy.evaluate(snapshot({ atMs: 0, memoryMib: 4_100 }))).toEqual({
       action: 'warn',
       reason: 'memory_warning',
     });
+    expect(policy.isWarningLatched()).toBe(true);
     expect(policy.evaluate(snapshot({ atMs: 2_000, memoryMib: 4_100 }))).toEqual(
       { action: 'none' },
     );
     expect(policy.evaluate(snapshot({ atMs: 4_000, memoryMib: 3_900 }))).toEqual(
       { action: 'none' },
     );
+    expect(policy.isWarningLatched()).toBe(true);
     // Still above reset (3840).
     expect(policy.evaluate(snapshot({ atMs: 6_000, memoryMib: 4_100 }))).toEqual(
       { action: 'none' },
@@ -80,6 +83,7 @@ describe('ResourceGuardPolicy', () => {
     expect(policy.evaluate(snapshot({ atMs: 8_000, memoryMib: 3_000 }))).toEqual(
       { action: 'none' },
     );
+    expect(policy.isWarningLatched()).toBe(false);
     expect(policy.evaluate(snapshot({ atMs: 10_000, memoryMib: 4_100 }))).toEqual(
       {
         action: 'warn',

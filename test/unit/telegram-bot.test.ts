@@ -6,6 +6,7 @@ import type { WatchdogScheduler } from '../../src/scheduler/index.js';
 import type { SessionManager } from '../../src/sessions/index.js';
 import {
   DefaultTelegramBot,
+  TelegramApiError,
   type TelegramApi,
   type TelegramUpdate,
 } from '../../src/telegram/index.js';
@@ -91,7 +92,6 @@ describe('DefaultTelegramBot', () => {
     await vi.waitFor(() => {
       expect(harness.logger.warn).toHaveBeenCalledWith(
         'telegram_unauthorized_chat',
-        { chatId: '99' },
       );
     });
     await harness.bot.stop('test');
@@ -112,7 +112,13 @@ describe('DefaultTelegramBot', () => {
     await vi.waitFor(() => {
       expect(harness.logger.warn).toHaveBeenCalledWith(
         'telegram_command_failed',
-        { updateId: 10, error: 'send failed' },
+        {
+          updateId: 10,
+          errorClass: 'Error',
+          httpStatus: null,
+          errorCategory: 'unknown',
+          retryInMs: 0,
+        },
       );
     });
     await harness.bot.stop('test');
@@ -148,6 +154,60 @@ describe('DefaultTelegramBot', () => {
       '⚫ first 已離線',
       '🎁 first 已領取忠誠點數',
     ]);
+  });
+
+  it('poll failure 記錄安全分類、HTTP status 與 retry delay', async () => {
+    const harness = createHarness([]);
+    harness.api.getUpdates.mockRejectedValueOnce(
+      new TelegramApiError('getUpdates', 'safe failure', {
+        errorCategory: 'http',
+        httpStatus: 429,
+      }),
+    );
+
+    await harness.bot.start();
+    await vi.waitFor(() => {
+      expect(harness.logger.warn).toHaveBeenCalledWith(
+        'telegram_poll_failed',
+        {
+          errorClass: 'TelegramApiError',
+          httpStatus: 429,
+          errorCategory: 'http',
+          retryInMs: 1_000,
+        },
+      );
+    });
+    await harness.bot.stop('test');
+
+    expect(harness.sleep).toHaveBeenCalledWith(
+      1_000,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('send failure 不記錄 chat ID、endpoint 或 request body', async () => {
+    const harness = createHarness([]);
+    harness.api.sendMessage.mockRejectedValueOnce(
+      new TelegramApiError('sendMessage', 'safe failure', {
+        errorCategory: 'network',
+      }),
+    );
+
+    await harness.bot.notifyStreamStatus({ channel: 'first', isLive: true });
+
+    expect(harness.logger.warn).toHaveBeenCalledWith(
+      'telegram_send_failed',
+      {
+        errorClass: 'TelegramApiError',
+        httpStatus: null,
+        errorCategory: 'network',
+        retryInMs: 0,
+      },
+    );
+    const serialized = JSON.stringify(harness.logger.warn.mock.calls);
+    expect(serialized).not.toContain('42');
+    expect(serialized).not.toContain('api.telegram.org');
+    expect(serialized).not.toContain('chat_id');
   });
 
   it('推送 page crash、browser restart 與 container restart 通知', async () => {
@@ -503,6 +563,7 @@ function createHarness(
     error: vi.fn(),
     flush: vi.fn(async () => undefined),
   } satisfies Logger;
+  const sleep = vi.fn(async () => undefined);
   const commandContext: BotCommandContext = {
     runCheck: () => scheduler.runOnce(),
     pauseChecks: () => scheduler.stop(),
@@ -530,6 +591,7 @@ function createHarness(
     api,
     commandContext,
     logger,
+    sleep,
   });
 
   return {
@@ -539,6 +601,7 @@ function createHarness(
     runtimeConfigManager,
     scheduler,
     sessionManager,
+    sleep,
   };
 }
 

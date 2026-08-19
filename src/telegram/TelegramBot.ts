@@ -21,6 +21,7 @@ import type {
   TelegramSendMessageOptions,
   TelegramUpdate,
 } from './TelegramApiClient.js';
+import { describeTelegramError } from './TelegramApiClient.js';
 
 export interface TelegramBot {
   start(): Promise<void>;
@@ -84,8 +85,11 @@ export class DefaultTelegramBot implements TelegramBot {
     this.abortController = new AbortController();
     try {
       await this.options.api.setMyCommands(BOT_COMMANDS);
-    } catch {
-      this.options.logger.warn('telegram_command_menu_failed');
+    } catch (error: unknown) {
+      this.options.logger.warn('telegram_command_menu_failed', {
+        ...describeTelegramError(error),
+        retryInMs: 0,
+      });
     }
     await this.broadcast(this.formatServiceStarted(), {
       reply_markup: COMMAND_KEYBOARD,
@@ -164,22 +168,25 @@ export class DefaultTelegramBot implements TelegramBot {
           } catch (error: unknown) {
             this.options.logger.warn('telegram_command_failed', {
               updateId: update.update_id,
-              error: safeErrorMessage(error),
+              ...describeTelegramError(error),
+              retryInMs: 0,
             });
           }
         }
-      } catch {
+      } catch (error: unknown) {
         if (signal.aborted) {
           return;
         }
         failureCount += 1;
-        this.options.logger.warn('telegram_poll_failed', {
-          retryInMs: Math.min(30_000, 1_000 * 2 ** (failureCount - 1)),
-        });
-        await this.sleep(
-          Math.min(30_000, 1_000 * 2 ** (failureCount - 1)),
-          signal,
+        const retryInMs = Math.min(
+          30_000,
+          1_000 * 2 ** (failureCount - 1),
         );
+        this.options.logger.warn('telegram_poll_failed', {
+          ...describeTelegramError(error),
+          retryInMs,
+        });
+        await this.sleep(retryInMs, signal);
       }
     }
   }
@@ -192,7 +199,7 @@ export class DefaultTelegramBot implements TelegramBot {
 
     const chatId = String(message.chat.id);
     if (!this.allowedChatIds.has(chatId)) {
-      this.options.logger.warn('telegram_unauthorized_chat', { chatId });
+      this.options.logger.warn('telegram_unauthorized_chat');
       return;
     }
 
@@ -448,7 +455,6 @@ export class DefaultTelegramBot implements TelegramBot {
       `${screenshot.channel} 目前瀏覽器畫面`,
     );
     this.options.logger.info('telegram_screenshot_sent', {
-      chatId,
       channel: screenshot.channel,
       bytes: screenshot.image.byteLength,
     });
@@ -664,8 +670,11 @@ export class DefaultTelegramBot implements TelegramBot {
     for (const chatId of this.allowedChatIds) {
       try {
         await this.options.api.sendMessage(chatId, text, options);
-      } catch {
-        this.options.logger.warn('telegram_send_failed', { chatId });
+      } catch (error: unknown) {
+        this.options.logger.warn('telegram_send_failed', {
+          ...describeTelegramError(error),
+          retryInMs: 0,
+        });
       }
     }
   }

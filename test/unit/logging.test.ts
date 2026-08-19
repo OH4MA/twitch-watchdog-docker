@@ -158,6 +158,43 @@ describe('JsonLineLogger', () => {
     });
   });
 
+  it('遞迴遮罩 Telegram 與 Discord 私人 identifier 欄位', () => {
+    const privateIdentifiers = [
+      'telegram-chat-secret',
+      'discord-channel-secret',
+      'discord-user-secret',
+      'discord-guild-secret',
+      'nested-chat-secret',
+    ];
+    const sanitized = redactSensitiveData({
+      chatId: privateIdentifiers[0],
+      discord: {
+        channel_id: privateIdentifiers[1],
+        userId: privateIdentifiers[2],
+        guildID: privateIdentifiers[3],
+      },
+      nested: [{ allowedChatIds: [privateIdentifiers[4]] }],
+      channel: 'public-channel-name',
+      updateId: 42,
+    });
+    const serialized = JSON.stringify(sanitized);
+
+    for (const identifier of privateIdentifiers) {
+      expect(serialized).not.toContain(identifier);
+    }
+    expect(sanitized).toEqual({
+      chatId: REDACTED_VALUE,
+      discord: {
+        channel_id: REDACTED_VALUE,
+        userId: REDACTED_VALUE,
+        guildID: REDACTED_VALUE,
+      },
+      nested: [{ allowedChatIds: REDACTED_VALUE }],
+      channel: 'public-channel-name',
+      updateId: 42,
+    });
+  });
+
   it('遮罩錯誤字串中的 Bearer token 與常見敏感指派', () => {
     const secrets = [
       'bearer-secret',
@@ -227,6 +264,29 @@ describe('JsonLineLogger', () => {
     expect(lines[0]).not.toContain('error-secret');
     expect(lines[0]).not.toContain('property-secret');
     expect(lines[0]).not.toContain('nested-secret');
+  });
+
+  it('遮罩巢狀 Error 的私人 identifier 屬性與訊息指派', () => {
+    const cause = new Error('chatId=nested-chat-secret');
+    Object.assign(cause, { userId: 'nested-user-secret' });
+    const error = new Error('channel_id=channel-secret', { cause });
+    Object.assign(error, {
+      guildId: 'guild-secret',
+      context: { chat_id: 'context-chat-secret' },
+    });
+    const sanitized = redactSensitiveData({ error });
+    const serialized = JSON.stringify(sanitized);
+
+    for (const identifier of [
+      'nested-chat-secret',
+      'nested-user-secret',
+      'channel-secret',
+      'guild-secret',
+      'context-chat-secret',
+    ]) {
+      expect(serialized).not.toContain(identifier);
+    }
+    expect(serialized).toContain(REDACTED_VALUE);
   });
 
   it('提供完整且不重複的必要事件名稱，且每個事件都有標準欄位', () => {

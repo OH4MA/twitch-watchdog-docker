@@ -73,6 +73,10 @@ export class ResourceGuardPolicy {
     return this.recycleObservation !== undefined;
   }
 
+  public isWarningLatched(): boolean {
+    return this.warningLatched;
+  }
+
   public beginRecycleObservation(memoryBeforeBytes: bigint): void {
     this.recycleObservation = {
       memoryBeforeBytes,
