@@ -1,4 +1,4 @@
-ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.60.0-noble
+ARG PLAYWRIGHT_IMAGE=mcr.microsoft.com/playwright:v1.62.1-noble
 
 FROM ${PLAYWRIGHT_IMAGE} AS base
 

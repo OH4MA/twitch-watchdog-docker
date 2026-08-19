@@ -118,7 +118,7 @@ docker run --rm --entrypoint node "${SMOKE_IMAGE}" -e '
     throw new Error(`Node ${process.versions.node} 不符合 >=24`);
   }
   const playwright = require("/app/node_modules/playwright/package.json");
-  if (playwright.version !== "1.60.0") {
+  if (playwright.version !== "1.62.1") {
     throw new Error(`Playwright 版本不正確：${playwright.version}`);
   }
 '
