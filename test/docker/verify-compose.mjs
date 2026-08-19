@@ -20,6 +20,15 @@ assert(
 );
 assert(service.init === true, '必須啟用 init');
 assert(service.read_only === true, 'root filesystem 必須唯讀');
+assert(service.logging?.driver === 'local', 'Logging driver must be local');
+assert(
+  service.logging?.options?.['max-size'] === '10m',
+  'Logging max-size must be 10m',
+);
+assert(
+  service.logging?.options?.['max-file'] === '5',
+  'Logging max-file must be 5',
+);
 assert(
   service.security_opt?.includes('no-new-privileges:true'),
   '必須啟用 no-new-privileges',

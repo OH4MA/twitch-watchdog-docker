@@ -9,6 +9,11 @@ services:
     container_name: twitch-watchdog
     init: true
     restart: unless-stopped
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "5"
     read_only: true
     security_opt:
       - no-new-privileges:true
